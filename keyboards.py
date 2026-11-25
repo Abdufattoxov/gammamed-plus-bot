@@ -259,16 +259,22 @@ def get_time_slots_inline_kb(date_str: str) -> InlineKeyboardMarkup:
 # ==========================================
 # 5. ADMIN BILDIRISHNOMASI VA PANEL TUGMALARI
 # ==========================================
-def get_admin_appointment_kb(appointment_id: int) -> InlineKeyboardMarkup:
-    """Adminlarga kelgan ariza ostidagi tugmalar"""
+def get_admin_appointment_kb(appointment_id: int, current_status: str = "Kutilmoqda") -> InlineKeyboardMarkup:
+    """Adminlarga kelgan ariza ostidagi tugmalar (holatga qarab dinamik belgilanadi)"""
+    is_accepted = "Qabul qilindi" in current_status
+    is_called = "Qo'ng'iroq qilindi" in current_status
+
+    accepted_label = "✅ Qabul qilingan" if is_accepted else "✅ Qabul qilish"
+    called_label = "📞 Qo‘ng‘iroq qilingan" if is_called else "📞 Qo‘ng‘iroq qilish"
+
     buttons = [
         [
             InlineKeyboardButton(
-                text="✅ Qabul qilindi",
+                text=accepted_label,
                 callback_data=f"adm_app:{appointment_id}:accepted"
             ),
             InlineKeyboardButton(
-                text="📞 Qo‘ng‘iroq qilindi",
+                text=called_label,
                 callback_data=f"adm_app:{appointment_id}:called"
             )
         ]

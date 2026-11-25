@@ -691,10 +691,15 @@ async def process_time_slot_selection(callback: CallbackQuery, state: FSMContext
     # Admin shaxsiy xabariga
     for admin_id in ADMIN_IDS:
         try:
-            await bot.send_message(
+            sent_msg = await bot.send_message(
                 chat_id=admin_id,
                 text=admin_notification,
-                reply_markup=get_admin_appointment_kb(app_id)
+                reply_markup=get_admin_appointment_kb(app_id, "Kutilmoqda")
+            )
+            await database.save_admin_appointment_message(
+                appointment_id=app_id,
+                chat_id=sent_msg.chat.id,
+                message_id=sent_msg.message_id
             )
         except Exception:
             pass
@@ -702,10 +707,15 @@ async def process_time_slot_selection(callback: CallbackQuery, state: FSMContext
     # Admin guruhiga
     if ADMIN_GROUP_ID:
         try:
-            await bot.send_message(
+            sent_msg = await bot.send_message(
                 chat_id=ADMIN_GROUP_ID,
                 text=admin_notification,
-                reply_markup=get_admin_appointment_kb(app_id)
+                reply_markup=get_admin_appointment_kb(app_id, "Kutilmoqda")
+            )
+            await database.save_admin_appointment_message(
+                appointment_id=app_id,
+                chat_id=sent_msg.chat.id,
+                message_id=sent_msg.message_id
             )
         except Exception:
             pass
@@ -715,8 +725,8 @@ async def process_time_slot_selection(callback: CallbackQuery, state: FSMContext
 # 7. ADMIN ARIZA STATUSINI O'ZGARTIRISH
 # ==========================================
 @router.callback_query(F.data.startswith("adm_app:"))
-async def process_admin_appointment_action(callback: CallbackQuery):
-    """Admin ariza holatini o'zgartirishi"""
+async def process_admin_appointment_action(callback: CallbackQuery, bot: Bot):
+    """Admin ariza holatini o'zgartirishi — BARCHA adminlarda bir vaqtda sinxron yangilanadi"""
     parts = callback.data.split(":")
     app_id = int(parts[1])
     action = parts[2]
@@ -724,32 +734,56 @@ async def process_admin_appointment_action(callback: CallbackQuery):
     admin_name = callback.from_user.first_name if callback.from_user else "Admin"
 
     if action == "accepted":
+        status_label = "Qabul qilindi"
         status_text = f"✅ Qabul qilindi ({admin_name} tomonidan)"
-        await database.update_appointment_status(app_id, "Qabul qilindi")
     elif action == "called":
+        status_label = "Qo'ng'iroq qilindi"
         status_text = f"📞 Qo‘ng‘iroq qilindi ({admin_name} tomonidan)"
-        await database.update_appointment_status(app_id, "Qo'ng'iroq qilindi")
     else:
+        status_label = "Noma'lum"
         status_text = "Noma'lum"
 
-    # HTML formatni to'liq saqlab qolish
+    # 1. Bazada arizaning joriy holatini yangilash
+    await database.update_appointment_status(app_id, status_label)
+
+    # 2. Xabar matnidagi holat qatorini yangilash
     current_html = callback.message.html_text or ""
     if "📌 <b>Holati:</b>" in current_html:
-        updated_text = re.sub(r"📌 <b>Holati:</b>.*", f"📌 <b>Holati:</b> <b>{status_text}</b>", current_html)
+        updated_text = re.sub(r"📌 <b>Holati:</b>.*", f"📌 <b>Holati:</b> <b>{status_text}</b>", current_html, flags=re.DOTALL)
     elif "📌 Holati:" in current_html:
-        updated_text = re.sub(r"📌 Holati:.*", f"📌 <b>Holati:</b> <b>{status_text}</b>", current_html)
+        updated_text = re.sub(r"📌 Holati:.*", f"📌 <b>Holati:</b> <b>{status_text}</b>", current_html, flags=re.DOTALL)
     else:
         updated_text = f"{current_html}\n\n📌 <b>Holati:</b> <b>{status_text}</b>"
 
-    try:
-        await callback.message.edit_text(
-            text=updated_text,
-            reply_markup=get_admin_appointment_kb(app_id)
-        )
-    except Exception:
-        pass
+    updated_kb = get_admin_appointment_kb(app_id, status_label)
 
-    await callback.answer(f"Ariza holati o'zgartirildi: {status_text}")
+    # 3. Ushbu arizaga tegishli barcha admin xabarlarini topamiz
+    admin_messages = await database.get_admin_appointment_messages(app_id)
+
+    # Agar joriy bosilgan xabar bazaga tushmagan bo'lsa, ro'yxatga kiritamiz
+    current_chat_id = callback.message.chat.id
+    current_msg_id = callback.message.message_id
+    already_tracked = any(
+        m.get("chat_id") == current_chat_id and m.get("message_id") == current_msg_id 
+        for m in admin_messages
+    )
+    if not already_tracked:
+        admin_messages.append({"chat_id": current_chat_id, "message_id": current_msg_id})
+        await database.save_admin_appointment_message(app_id, current_chat_id, current_msg_id)
+
+    # 4. BARCHA adminlarning xabarlarini bir vaqtning o'zida yangilash
+    for m in admin_messages:
+        try:
+            await bot.edit_message_text(
+                chat_id=m["chat_id"],
+                message_id=m["message_id"],
+                text=updated_text,
+                reply_markup=updated_kb
+            )
+        except Exception:
+            pass
+
+    await callback.answer(f"Holat barcha adminlarda yangilandi: {status_text}")
 
 
 # ==========================================

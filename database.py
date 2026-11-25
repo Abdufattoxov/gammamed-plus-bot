@@ -68,6 +68,15 @@ async def init_db():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS appointment_admin_messages (
+                    id SERIAL PRIMARY KEY,
+                    appointment_id INTEGER,
+                    chat_id BIGINT,
+                    message_id BIGINT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
     else:
         async with aiosqlite.connect(DATABASE_NAME) as db:
             await db.execute("""
@@ -98,6 +107,15 @@ async def init_db():
                     user_id INTEGER,
                     question_text TEXT,
                     status TEXT DEFAULT 'Yangi',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS appointment_admin_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    appointment_id INTEGER,
+                    chat_id INTEGER,
+                    message_id INTEGER,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -218,6 +236,45 @@ async def update_appointment_status(app_id: int, status: str):
                 WHERE id = ?
             """, (status, app_id))
             await db.commit()
+
+
+async def save_admin_appointment_message(appointment_id: int, chat_id: int, message_id: int):
+    """Adminlarga yuborilgan ariza xabarini saqlash (barcha adminlarda sinxron yangilash uchun)"""
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO appointment_admin_messages (appointment_id, chat_id, message_id)
+                VALUES ($1, $2, $3);
+            """, appointment_id, chat_id, message_id)
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            await db.execute("""
+                INSERT INTO appointment_admin_messages (appointment_id, chat_id, message_id)
+                VALUES (?, ?, ?)
+            """, (appointment_id, chat_id, message_id))
+            await db.commit()
+
+
+async def get_admin_appointment_messages(appointment_id: int) -> list[dict]:
+    """Arizaga tegishli barcha admin xabarlari (chat_id va message_id) ni olish"""
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT chat_id, message_id FROM appointment_admin_messages
+                WHERE appointment_id = $1;
+            """, appointment_id)
+            return [dict(r) for r in rows]
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT chat_id, message_id FROM appointment_admin_messages
+                WHERE appointment_id = ?
+            """, (appointment_id,)) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
 
 
 async def save_anonymous_question(user_id: int, question_text: str) -> int:
