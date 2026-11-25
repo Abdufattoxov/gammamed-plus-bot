@@ -791,7 +791,10 @@ async def admin_stats_callback(callback: CallbackQuery):
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"⏰ <i>Yangilangan vaqt: {datetime.now().strftime('%d.%m.%Y %H:%M')}</i>"
     )
-    await callback.message.edit_text(text=text, reply_markup=get_admin_panel_kb())
+    try:
+        await callback.message.edit_text(text=text, reply_markup=get_admin_panel_kb())
+    except Exception:
+        pass
     await callback.answer()
 
 
