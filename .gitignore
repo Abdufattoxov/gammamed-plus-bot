@@ -1,0 +1,24 @@
+# Muhit o'zgaruvchilari (maxfiy tokenlar)
+.env
+
+# Ma'lumotlar bazasi va eksport fayllari
+*.db
+*.sqlite3
+gammamed.db
+*.xlsx
+
+# Python kesh va virtual muhit
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+
+# IDE va muharrir sozlamalari
+.vscode/
+.idea/
+
+# Kesh va vaqtinchalik fayllar
+voice_cache/
+*.log
