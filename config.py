@@ -22,8 +22,9 @@ ADMIN_IDS: list[int] = list(set(
 admin_group_raw = os.getenv("ADMIN_GROUP_ID", "")
 ADMIN_GROUP_ID: int | None = int(admin_group_raw) if admin_group_raw and (admin_group_raw.lstrip("-").isdigit()) else None
 
-# Ma'lumotlar bazasi nomi
+# Ma'lumotlar bazasi sozlamalari
 DATABASE_NAME: str = os.getenv("DATABASE_NAME", "gammamed.db")
+DATABASE_URL: str = os.getenv("DATABASE_URL", "")
 
 # Klinika va shifokor ma'lumotlari
 CLINIC_NAME: str = "Gammamed Plus"
