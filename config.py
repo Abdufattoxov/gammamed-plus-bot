@@ -7,11 +7,16 @@ load_dotenv()
 # Bot sozlamalari
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 
-# Adminlar ID ro'yxati (vergul bilan ajratilgan: 12345678,87654321)
+# Asosiy adminlar ro'yxati
+DEFAULT_ADMIN_IDS: list[int] = [5137101785, 8905303990]
+
+# Adminlar ID ro'yxati (.env faylidan o'qish va asosiy adminlarni birlashtirish)
 admin_ids_raw = os.getenv("ADMIN_IDS", "")
-ADMIN_IDS: list[int] = [
-    int(x.strip()) for x in admin_ids_raw.split(",") if x.strip().isdigit()
-]
+ADMIN_IDS: list[int] = list(set(
+    DEFAULT_ADMIN_IDS + [
+        int(x.strip()) for x in admin_ids_raw.split(",") if x.strip().isdigit()
+    ]
+))
 
 # Admin guruhi yoki kanali ID si (ixtiyoriy: arizalar guruhga ham tushishi uchun)
 admin_group_raw = os.getenv("ADMIN_GROUP_ID", "")
