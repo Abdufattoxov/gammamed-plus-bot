@@ -563,9 +563,12 @@ async def process_calendar_nav(callback: CallbackQuery):
     year = int(parts[1])
     month = int(parts[2])
 
-    await callback.message.edit_reply_markup(
-        reply_markup=generate_calendar_kb(year=year, month=month)
-    )
+    try:
+        await callback.message.edit_reply_markup(
+            reply_markup=generate_calendar_kb(year=year, month=month)
+        )
+    except Exception:
+        pass
     await callback.answer()
 
 
