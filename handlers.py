@@ -1,5 +1,6 @@
 import os
 import re
+import asyncio
 from datetime import datetime
 from aiogram import Router, F, Bot
 from aiogram.filters import Command, CommandStart, CommandObject, StateFilter
@@ -22,9 +23,11 @@ from config import (
     CLINIC_ADDRESS,
     CLINIC_WORKING_HOURS,
     CONSULTATION_OFFER,
-    SAFETY_NOTICE
+    SAFETY_NOTICE,
+    GOOGLE_SHEET_URL
 )
 import database
+import google_sheets
 from states import AppointmentState, AnonymousQuestionState, AdminBroadcastState
 from keyboards import (
     get_main_menu_kb,
@@ -720,6 +723,19 @@ async def process_time_slot_selection(callback: CallbackQuery, state: FSMContext
         except Exception:
             pass
 
+    # 4. Google Sheets'ga avtomatik yuborish (fondagi mustaqil vazifa)
+    lead_payload = {
+        "id": app_id,
+        "date": datetime.now().strftime("%d.%m.%Y %H:%M"),
+        "patient_name": patient_name,
+        "phone_number": phone_number,
+        "service": problem,
+        "appointment_time": full_appointment_time,
+        "status": "Kutilmoqda",
+        "user_id": user_id
+    }
+    asyncio.create_task(google_sheets.append_lead_to_google_sheet(lead_payload))
+
 
 # ==========================================
 # 7. ADMIN ARIZA STATUSINI O'ZGARTIRISH
@@ -829,6 +845,33 @@ async def admin_stats_callback(callback: CallbackQuery):
         await callback.message.edit_text(text=text, reply_markup=get_admin_panel_kb())
     except Exception:
         pass
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_google_sheets")
+async def admin_google_sheets_callback(callback: CallbackQuery):
+    """Google Sheets havolasini taqdim etish yoki sozlash yo'riqnomasini ko'rsatish"""
+    user_id = callback.from_user.id if callback.from_user else 0
+    if user_id not in ADMIN_IDS:
+        await callback.answer("Ruxsat berilmagan!", show_alert=True)
+        return
+
+    sheet_url = os.getenv("GOOGLE_SHEET_URL", GOOGLE_SHEET_URL)
+    if sheet_url and sheet_url.startswith("http"):
+        text = (
+            f"📊 <b>«{CLINIC_NAME}» Bemorlar Bazasi (Google Sheets)</b>\n\n"
+            f"Barcha yangi mijozlar va qabul arizalari avtomatik tarzda Google Sheets jadvalingizga qo‘shib borilmoqda.\n\n"
+            f"Telefonda ochish uchun quyidagi havolani bosing:\n"
+            f"🔗 <a href='{sheet_url}'>Google Sheets Jadvalini Ochish</a>"
+        )
+    else:
+        text = (
+            f"📊 <b>Google Sheets Bemorlar Bazasi</b>\n\n"
+            f"Hozirda Google Sheets havolasi botga kiritilmagan.\n\n"
+            f"Lidlar to‘g‘ridan-to‘g‘ri shaxsiy Google hisobingizdagi jadvalga tushishi uchun "
+            f"jadval ochib, uning havolasini server sozlamalariga kiriting."
+        )
+    await callback.message.answer(text=text, disable_web_page_preview=True)
     await callback.answer()
 
 

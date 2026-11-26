@@ -1,11 +1,13 @@
 import calendar
 from datetime import datetime, date, timedelta
+import os
 from aiogram.types import (
     ReplyKeyboardMarkup,
     KeyboardButton,
     InlineKeyboardMarkup,
     InlineKeyboardButton
 )
+from config import GOOGLE_SHEET_URL
 
 # O'zbekcha oylar
 UZ_MONTHS = [
@@ -284,16 +286,26 @@ def get_admin_appointment_kb(appointment_id: int, current_status: str = "Kutilmo
 
 def get_admin_panel_kb() -> InlineKeyboardMarkup:
     """Admin panel boshqaruv tugmalari"""
+    sheet_url = os.getenv("GOOGLE_SHEET_URL", GOOGLE_SHEET_URL)
+    
+    if sheet_url and sheet_url.startswith("http"):
+        sheet_button = InlineKeyboardButton(
+            text="📊 Baza (Google Sheets)",
+            url=sheet_url
+        )
+    else:
+        sheet_button = InlineKeyboardButton(
+            text="📊 Baza (Google Sheets)",
+            callback_data="admin_google_sheets"
+        )
+
     buttons = [
         [
             InlineKeyboardButton(
-                text="📊 Statistika",
+                text="📈 Statistika",
                 callback_data="admin_stats"
             ),
-            InlineKeyboardButton(
-                text="📥 Baza (Excel)",
-                callback_data="admin_export"
-            )
+            sheet_button
         ],
         [
             InlineKeyboardButton(
