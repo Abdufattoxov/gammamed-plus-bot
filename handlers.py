@@ -239,7 +239,7 @@ async def price_info_handler(message: Message, state: FSMContext):
         f"💰 <b>Birlamchi chuqur qabul narxi: {CONSULTATION_PRICE}</b>\n"
         f"<i>(Qabulga yozilish jarayonini boshlash uchun qabulga yozilish tugmasini bosing)</i>\n\n"
         f"<b>Bu narxning ichiga nimalar kiradi (bitta qabulda 4 ta xizmat):</b>\n"
-        f"1️⃣ <b>Er-xotin birgalikdagi chuqur suhbat va ko‘rik</b> — bitta narxning o‘zida turmush o‘rtog‘ingiz bilan birga kirasiz;\n"
+        f"1️⃣ <b>Er-xotin birgalikdagi chuqur suhbat</b> — bitta narxning o‘zida turmush o‘rtog‘ingiz bilan birga kirasiz;\n"
         f"2️⃣ <b>Eski analiz va UTT qog‘ozlarining to‘liq auditi</b> — Dr. Zarifa (30 yil tajriba) barcha qog‘ozlaringizni ko‘rib, keraksiz dorilar va ortiqcha xarajatlardan himoya qiladi;\n"
         f"3️⃣ <b>To‘liq tuzalishga qaratilgan shaxsiy mashqlar kompleksi</b> — og‘riq va bachadon spazmini dorisiz yechuvchi maxsus mashqlar qo‘lingizga yozib va tushuntirib beriladi;\n"
         f"4️⃣ <b>24 soatlik individual kun tartibi xaritasi</b> — uyg‘onishdan uyqugacha bo‘lgan soatma-soat tiklanish rejasi aniq yozib va tushuntirib beriladi.\n\n"
