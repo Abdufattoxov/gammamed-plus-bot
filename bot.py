@@ -13,13 +13,9 @@ from aiogram.types import BotCommand, BotCommandScopeDefault, BotCommandScopeCha
 from config import BOT_TOKEN, ADMIN_IDS, CLINIC_ADDRESS, CLINIC_REMAINING_AMOUNT
 import database
 from handlers import router, send_reception_list, _fmt_money
+from webhook_server import start_web_server
 
 UZ_TZ = timezone(timedelta(hours=5))
-
-
-async def health_check_handler(request: web.Request) -> web.Response:
-    """Render va boshqa bulutli serverlar uchun sog'lomlik tekshiruvi (Health Check)"""
-    return web.Response(text="Gammamed Plus Telegram Bot is running!", status=200)
 
 
 async def keep_alive_task():
@@ -43,32 +39,6 @@ async def keep_alive_task():
             logging.warning(f"Keep-alive self-ping ogohlantirish: {e}")
         # Har 10 daqiqada (600 soniya) qaytarish (Render 15 daqiqada uxlaydi, shuning uchun 10 daqiqa ideal)
         await asyncio.sleep(600)
-
-
-async def start_background_web_server():
-    """
-    Render 'Web Service' sifatida ishlatilganda PORT o'zgaruvchisini tinglaydi.
-    Shu tariqa Render botni muvaffaqiyatli 'Live' holatiga o'tkazadi.
-    """
-    port_env = os.getenv("PORT")
-    if not port_env:
-        return None
-
-    try:
-        port = int(port_env)
-        app = web.Application()
-        app.router.add_get("/", health_check_handler)
-        app.router.add_get("/health", health_check_handler)
-
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, "0.0.0.0", port)
-        await site.start()
-        logging.info(f"Render uchun Health Check veb-serveri 0.0.0.0:{port} manzilida ishga tushirildi.")
-        return runner
-    except Exception as e:
-        logging.warning(f"Veb-serverni ishga tushirishda xatolik: {e}")
-        return None
 
 
 async def set_bot_commands(bot: Bot):
@@ -184,9 +154,6 @@ async def main():
         )
         return
 
-    # Render uchun fonga veb-serverni ulash
-    web_runner = await start_background_web_server()
-
     # Bot va Dispatcher obyektlari
     bot = Bot(
         token=BOT_TOKEN,
@@ -200,6 +167,9 @@ async def main():
     # Ma'lumotlar bazasini initsializatsiya qilish
     logger.info("Ma'lumotlar bazasi initsializatsiya qilinmoqda...")
     await database.init_db()
+
+    # Render va ChatPlace webhook uchun fonga aiohttp veb-serverni ulash
+    web_runner = await start_web_server(bot)
 
     # Buyruqlar menyusini o'rnatish
     await set_bot_commands(bot)

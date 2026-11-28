@@ -142,6 +142,7 @@ async def init_db():
                 "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS reminder_sent BOOLEAN DEFAULT FALSE;",
                 "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS appointment_date_iso TEXT;",
                 "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS appointment_slot TEXT;",
+                "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'Telegram Bot';",
             ]
             for stmt in appt_migrations_pg:
                 await conn.execute(stmt)
@@ -252,6 +253,7 @@ async def init_db():
                 "reminder_sent": "INTEGER DEFAULT 0",
                 "appointment_date_iso": "TEXT",
                 "appointment_slot": "TEXT",
+                "source": "TEXT DEFAULT 'Telegram Bot'",
             }
             for col_name, col_def in appt_migrations_sqlite.items():
                 if col_name not in existing_appt_cols:
@@ -323,7 +325,8 @@ async def create_appointment(
     region: str = "Bulung'ur",
     notes: str = "",
     appointment_date_iso: str = "",
-    appointment_slot: str = ""
+    appointment_slot: str = "",
+    source: str = "Telegram Bot"
 ) -> int:
     """Yangi qabul arizasini bazaga kiritish"""
     full_notes = f"Qabul vaqti: {appointment_time}" if not notes else f"Qabul: {appointment_time} | {notes}"
@@ -334,23 +337,41 @@ async def create_appointment(
             row_id = await conn.fetchval("""
                 INSERT INTO appointments (
                     user_id, service, region, patient_name, phone_number,
-                    notes, status, payment_status, appointment_date_iso, appointment_slot
+                    notes, status, payment_status, appointment_date_iso, appointment_slot, source
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, 'Kutilmoqda', 'unpaid', $7, $8)
+                VALUES ($1, $2, $3, $4, $5, $6, 'Kutilmoqda', 'unpaid', $7, $8, $9)
                 RETURNING id;
-            """, user_id, service, region, patient_name, phone_number, full_notes, appointment_date_iso, appointment_slot)
+            """, user_id, service, region, patient_name, phone_number, full_notes, appointment_date_iso, appointment_slot, source)
             return row_id
     else:
         async with aiosqlite.connect(DATABASE_NAME) as db:
             cursor = await db.execute("""
                 INSERT INTO appointments (
                     user_id, service, region, patient_name, phone_number,
-                    notes, status, payment_status, appointment_date_iso, appointment_slot
+                    notes, status, payment_status, appointment_date_iso, appointment_slot, source
                 )
-                VALUES (?, ?, ?, ?, ?, ?, 'Kutilmoqda', 'unpaid', ?, ?)
-            """, (user_id, service, region, patient_name, phone_number, full_notes, appointment_date_iso, appointment_slot))
+                VALUES (?, ?, ?, ?, ?, ?, 'Kutilmoqda', 'unpaid', ?, ?, ?)
+            """, (user_id, service, region, patient_name, phone_number, full_notes, appointment_date_iso, appointment_slot, source))
             await db.commit()
             return cursor.lastrowid
+
+
+async def link_appointment_user_id(app_id: int, user_id: int):
+    """Instagram/ChatPlace arizasiga mijozning Telegram user_id sini bog'lash"""
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE appointments SET user_id = $1 WHERE id = $2;",
+                user_id, app_id
+            )
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            await db.execute(
+                "UPDATE appointments SET user_id = ? WHERE id = ?",
+                (user_id, app_id)
+            )
+            await db.commit()
 
 
 async def get_appointment_by_id(app_id: int) -> dict | None:
@@ -830,7 +851,7 @@ async def export_appointments_to_excel(filepath: str) -> str:
             """)
             all_records = await conn.fetch("""
                 SELECT id, client_number, created_at, notes, patient_name, phone_number,
-                       service, status, payment_status, rejection_reason
+                       service, status, payment_status, rejection_reason, source
                 FROM appointments
                 ORDER BY id DESC;
             """)
@@ -849,7 +870,7 @@ async def export_appointments_to_excel(filepath: str) -> str:
                 paid_rows = [dict(r) for r in await cursor.fetchall()]
             async with db.execute("""
                 SELECT id, client_number, created_at, notes, patient_name, phone_number,
-                       service, status, payment_status, rejection_reason
+                       service, status, payment_status, rejection_reason, source
                 FROM appointments
                 ORDER BY id DESC
             """) as cursor:
@@ -959,6 +980,7 @@ async def export_appointments_to_excel(filepath: str) -> str:
         "Bemor F.I.O.",
         "Telefon raqami",
         "Muammosi",
+        "Manbasi",
         "Holati",
         "To‘lov holati",
         "Rad etish sababi"
@@ -986,6 +1008,7 @@ async def export_appointments_to_excel(filepath: str) -> str:
             row.get("patient_name") or "",
             row.get("phone_number") or "",
             row.get("service") or "",
+            row.get("source") or "Telegram Bot",
             row.get("status") or "",
             row.get("payment_status") or "unpaid",
             row.get("rejection_reason") or ""
@@ -997,7 +1020,7 @@ async def export_appointments_to_excel(filepath: str) -> str:
             c.border = thin_border
             c.fill = row_fill
             c.alignment = Alignment(
-                horizontal="center" if col_num in (1, 2, 3, 6, 9) else "left",
+                horizontal="center" if col_num in (1, 2, 3, 6, 8, 10) else "left",
                 vertical="center"
             )
 

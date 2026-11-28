@@ -184,6 +184,53 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext)
         )
         return
 
+    # 1.1 Instagram ChatPlace deep-link (/start ig_lead)
+    if command.args and "ig_lead" in command.args:
+        await message.answer(
+            text=(
+                "🌸 Assalomu alaykum! Instagram orqali qoldirgan arizangiz qabul qilindi. "
+                "Tez orada ma’muriyatimiz sizga qo‘ng‘iroq qilib, Dr. Zarifa qabuliga aniq vaqtni "
+                "belgilab beradi va shaxsiy tartib raqamingizni (№ 100+) rasmiylashtirib beradi."
+            ),
+            reply_markup=get_main_menu_kb()
+        )
+        return
+
+    # 1.2 Instagram/ChatPlace mijozlari uchun shaxsiy to'lov havolasi (/start pay_<app_id>)
+    if command.args and command.args.startswith("pay_"):
+        app_id_str = command.args[4:].strip()
+        if app_id_str.isdigit():
+            app_id = int(app_id_str)
+            app = await database.get_appointment_by_id(app_id)
+            if not app:
+                await message.answer("❌ Uzr, ushbu ariza topilmadi.", reply_markup=get_main_menu_kb())
+                return
+            if user and not app.get("user_id"):
+                await database.link_appointment_user_id(app_id, user.id)
+            if app.get("payment_status") == "paid":
+                await message.answer(
+                    f"✅ To‘lovingiz allaqachon tasdiqlangan! Sizning tartib raqamingiz: <b>№ {app.get('client_number')}</b>",
+                    reply_markup=get_main_menu_kb()
+                )
+                return
+            prepay = app.get("prepayment_amount") or (PREPAYMENT_BASE + (app_id % 99) + 1)
+            remaining = CLINIC_REMAINING_AMOUNT
+            if not app.get("prepayment_amount"):
+                await database.set_appointment_prepayment(app_id, prepay, remaining)
+            client_msg = (
+                f"✅ <b>Qabulga yozilish tasdiqlandi!</b>\n\n"
+                f"Joyingizni boshqa bemorga berib yubormasligimiz uchun oldindan to‘lovni quyidagi kartaga o‘tkazing:\n"
+                f"💳 <b>Karta raqami:</b> <code>{PAYMENT_CARD_NUMBER}</code> ({PAYMENT_CARD_HOLDER})\n"
+                f"💰 <b>Oldindan to‘lov (aniq summa):</b> <b>{_fmt_money(prepay)} so‘m</b> <i>(iltimos, aynan shu summani o‘tkazing)</i>\n"
+                f"🏥 <b>Klinikada to‘lanadigan qoldiq:</b> <b>{_fmt_money(remaining)} so‘m</b>\n\n"
+                f"👇 To‘lov qilgach, pastdagi tugmani bosib chek rasmini yuboring!"
+            )
+            await message.answer(
+                text=client_msg,
+                reply_markup=get_client_receipt_kb(app_id)
+            )
+            return
+
     # 2. Standart /start
     greeting_name = user.first_name if user else "muhtaram bemor"
     cta_block = (
@@ -915,6 +962,21 @@ async def process_admin_lead_decision(callback: CallbackQuery, bot: Bot):
             source_html=callback.message.html_text or ""
         )
 
+        # Agar ariza Instagram/ChatPlace dan kelgan bo'lib user_id bog'lanmagan bo'lsa, adminga tayyor bot linkini ko'rsatamiz
+        if not app.get("user_id"):
+            bot_info = await bot.get_me()
+            pay_link = f"https://t.me/{bot_info.username}?start=pay_{app_id}"
+            await callback.message.answer(
+                text=(
+                    f"📲 <b>Instagram/ChatPlace mijoziga yuborish uchun to‘lov havolasi (#A-{app_id}):</b>\n\n"
+                    f"👤 {html.escape(app.get('patient_name', ''))} | 💰 Summa: <b>{_fmt_money(prepay)} so‘m</b>\n"
+                    f"🔗 <code>{pay_link}</code>\n\n"
+                    f"<i>Mijoz ushbu havolani bosishi bilan unga karta raqami va chek yuborish tugmasi chiqadi.</i>"
+                )
+            )
+            await callback.answer("To‘lov havolasi tayyorlandi!")
+            return
+
         # Mijozga avtomatik karta va unikal summa xabarini yuborish
         client_msg = (
             f"✅ <b>Qabulga yozilish tasdiqlandi!</b>\n\n"
@@ -1163,6 +1225,9 @@ async def process_admin_payment_verification(callback: CallbackQuery, bot: Bot):
         return
 
     if action == "approve":
+        if app.get("payment_status") == "paid" and app.get("client_number") is not None:
+            await callback.answer(f"Allaqachon tasdiqlangan (№ {app.get('client_number')})!", show_alert=True)
+            return
         client_number = await database.approve_appointment_payment(app_id)
 
         date_disp = format_uz_date(app.get("appointment_date_iso") or "") if app.get("appointment_date_iso") else (app.get("notes") or "")
