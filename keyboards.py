@@ -384,9 +384,10 @@ def get_admin_panel_kb(perms: dict | None = None) -> InlineKeyboardMarkup:
         ])
 
     if perms.get("is_super") or perms.get("can_manage_admins"):
-        buttons.append([
-            InlineKeyboardButton(text="👥 Adminlar boshqaruvi", callback_data="adm_mgr:menu")
-        ])
+        adm_row = [InlineKeyboardButton(text="👥 Adminlar boshqaruvi", callback_data="adm_mgr:menu")]
+        if perms.get("is_super"):
+            adm_row.append(InlineKeyboardButton(text="🗑 Bazani tozalash", callback_data="db_clean:menu"))
+        buttons.append(adm_row)
 
     buttons.append([
         InlineKeyboardButton(text="❌ Yopish", callback_data="admin_close")
@@ -473,3 +474,34 @@ def get_services_info_inline_kb(button_text: str = "📅 Hozir qabulga yozilish"
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_db_clean_menu_kb(recent_apps: list[dict]) -> InlineKeyboardMarkup:
+    """Super Admin uchun testlarni tozalash va oxirgi 20 ta arizani bittalab o'chirish menyusi"""
+    buttons = [
+        [InlineKeyboardButton(text="🧹 Testlarni tozalash (To‘lanmaganlar)", callback_data="db_clean:ask_unpaid")]
+    ]
+    for app in recent_apps:
+        aid = app["id"]
+        name = (app.get("patient_name") or "Noma'lum")[:18]
+        num = f"№{app['client_number']}" if app.get("client_number") else app.get("payment_status", "unpaid")
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"🗑 O‘chirish #{aid} — {name} ({num})",
+                callback_data=f"db_clean:ask_one:{aid}"
+            )
+        ])
+    buttons.append([
+        InlineKeyboardButton(text="⬅️ Admin panelga qaytish", callback_data="adm_mgr:back")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_db_clean_confirm_kb(confirm_callback_data: str) -> InlineKeyboardMarkup:
+    """O'chirishni tasdiqlash tugmalari"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Ha, o‘chirilsin", callback_data=confirm_callback_data),
+            InlineKeyboardButton(text="❌ Yo‘q, bekor qilish", callback_data="db_clean:menu")
+        ]
+    ])

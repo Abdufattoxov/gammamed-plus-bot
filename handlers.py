@@ -27,6 +27,7 @@ from config import (
     CONSULTATION_PRICE,
     TOTAL_CONSULTATION_PRICE,
     PREPAYMENT_BASE,
+    CLINIC_REMAINING_AMOUNT,
     PAYMENT_CARD_NUMBER,
     PAYMENT_CARD_HOLDER,
     CONSULTATION_OFFER,
@@ -58,6 +59,8 @@ from keyboards import (
     get_admin_manage_kb,
     get_admin_perm_toggle_kb,
     get_admin_list_kb,
+    get_db_clean_menu_kb,
+    get_db_clean_confirm_kb,
     get_services_info_inline_kb
 )
 
@@ -836,7 +839,7 @@ async def send_reception_list(bot: Bot, target_chat_id: int, target_dates: list[
         phone = r.get("phone_number") or ""
         date_iso = r.get("appointment_date_iso") or ""
         slot = r.get("appointment_slot") or ""
-        rem = _fmt_money(r.get("remaining_amount") or 0)
+        rem = _fmt_money(CLINIC_REMAINING_AMOUNT)
         lines.append(
             f"🎫 <b>№ {num}</b> | {name} | <code>{phone}</code>\n"
             f"   🕒 {date_iso} ({slot}) | 💵 Resepshnda olinadi: <b>{rem} so‘m</b>"
@@ -844,14 +847,14 @@ async def send_reception_list(bot: Bot, target_chat_id: int, target_dates: list[
 
     await bot.send_message(chat_id=target_chat_id, text="\n".join(lines))
 
-    filename = f"resepshn_royxati_{target_chat_id}_{datetime.now(UZ_TZ).strftime('%Y%m%d_%H%M')}.xlsx"
+    filename = f"bemorlar_bazasi_{target_chat_id}_{datetime.now(UZ_TZ).strftime('%Y%m%d_%H%M')}.xlsx"
     try:
-        await database.export_reception_list_to_excel(rows, filename)
-        doc = FSInputFile(filename, filename="resepshn_royxati.xlsx")
+        await database.export_appointments_to_excel(filename)
+        doc = FSInputFile(filename, filename="bemorlar_bazasi.xlsx")
         await bot.send_document(
             chat_id=target_chat_id,
             document=doc,
-            caption=f"📥 <b>{title_label}</b> — Resepshn uchun tayyor Excel ro‘yxat"
+            caption=f"📥 <b>{title_label}</b> — 2 sahifali Excel ro‘yxat"
         )
     except Exception:
         pass
@@ -900,7 +903,7 @@ async def process_admin_lead_decision(callback: CallbackQuery, bot: Bot):
             return
 
         prepay = PREPAYMENT_BASE + (app_id % 99) + 1
-        remaining = TOTAL_CONSULTATION_PRICE - prepay
+        remaining = CLINIC_REMAINING_AMOUNT
         await database.set_appointment_prepayment(app_id, prepay, remaining)
 
         status_line = f"🟡 Mijoz rozi bo‘ldi — {_fmt_money(prepay)} so‘m chek kutilmoqda"
@@ -917,7 +920,8 @@ async def process_admin_lead_decision(callback: CallbackQuery, bot: Bot):
             f"✅ <b>Qabulga yozilish tasdiqlandi!</b>\n\n"
             f"Joyingizni boshqa bemorga berib yubormasligimiz uchun oldindan to‘lovni quyidagi kartaga o‘tkazing:\n"
             f"💳 <b>Karta raqami:</b> <code>{PAYMENT_CARD_NUMBER}</code> ({PAYMENT_CARD_HOLDER})\n"
-            f"💰 <b>Oldindan to‘lov (aniq summa):</b> <b>{_fmt_money(prepay)} so‘m</b> <i>(iltimos, aynan shu summani o‘tkazing)</i>\n\n"
+            f"💰 <b>Oldindan to‘lov (aniq summa):</b> <b>{_fmt_money(prepay)} so‘m</b> <i>(iltimos, aynan shu summani o‘tkazing)</i>\n"
+            f"🏥 <b>Klinikada to‘lanadigan qoldiq:</b> <b>{_fmt_money(remaining)} so‘m</b>\n\n"
             f"👇 To‘lov qilgach, pastdagi tugmani bosib chek rasmini yuboring!"
         )
         try:
@@ -1768,3 +1772,92 @@ async def admin_manage_delete(callback: CallbackQuery, bot: Bot):
 
     # Ro'yxatni yangilash
     await admin_manage_list(callback)
+
+
+# ==========================================
+# 10. SUPER ADMIN: BAZANI TOZALASH VA TESTLARNI O'CHIRISH
+# ==========================================
+@router.callback_query(F.data == "db_clean:menu")
+async def db_clean_menu_callback(callback: CallbackQuery):
+    """Bazani tozalash bo'limi (faqat Super Admin uchun)"""
+    user_id = callback.from_user.id if callback.from_user else 0
+    perms = await database.get_admin_permissions(user_id)
+    if not perms or not perms.get("is_super"):
+        return
+
+    recent = await database.get_recent_appointments(limit=20)
+    text = (
+        f"🗑 <b>Bazani tozalash (Super Admin)</b>\n\n"
+        f"Bu yerdan to‘lanmagan barcha test yozuvlarni tozalashingiz yoki oxirgi 20 ta arizadan "
+        f"keraksizini bittalab o‘chirishingiz mumkin.\n\n"
+        f"<i>Eslatma: O‘chirilgan raqamlar (100+) bo‘sh o‘rin sifatida keyingi haqiqiy mijozlarga beriladi.</i>"
+    )
+    try:
+        await callback.message.edit_text(text=text, reply_markup=get_db_clean_menu_kb(recent))
+    except Exception:
+        await callback.message.answer(text=text, reply_markup=get_db_clean_menu_kb(recent))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "db_clean:ask_unpaid")
+async def db_clean_ask_unpaid(callback: CallbackQuery):
+    """To'lanmagan test yozuvlarni o'chirishni tasdiqlash"""
+    user_id = callback.from_user.id if callback.from_user else 0
+    perms = await database.get_admin_permissions(user_id)
+    if not perms or not perms.get("is_super"):
+        return
+
+    await callback.message.edit_text(
+        "⚠️ <b>Haqiqatan ham to‘lanmagan barcha test arizalarni o‘chirmoqchimisiz?</b>\n\n"
+        "<i>(To‘lov qilgan `paid` mijozlar o‘chirilmaydi, ular xavfsiz saqlanadi.)</i>",
+        reply_markup=get_db_clean_confirm_kb("db_clean:do_unpaid")
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "db_clean:do_unpaid")
+async def db_clean_do_unpaid(callback: CallbackQuery):
+    """To'lanmagan test yozuvlarni o'chirish"""
+    user_id = callback.from_user.id if callback.from_user else 0
+    perms = await database.get_admin_permissions(user_id)
+    if not perms or not perms.get("is_super"):
+        return
+
+    deleted_count = await database.delete_unpaid_test_appointments()
+    await callback.answer(f"🧹 {deleted_count} ta test yozuv o‘chirildi!", show_alert=True)
+    await db_clean_menu_callback(callback)
+
+
+@router.callback_query(F.data.startswith("db_clean:ask_one:"))
+async def db_clean_ask_one(callback: CallbackQuery):
+    """Bitta arizani o'chirishni tasdiqlash"""
+    user_id = callback.from_user.id if callback.from_user else 0
+    perms = await database.get_admin_permissions(user_id)
+    if not perms or not perms.get("is_super"):
+        return
+
+    app_id = int(callback.data.split(":")[2])
+    app = await database.get_appointment_by_id(app_id)
+    name = app.get("patient_name") if app else f"#{app_id}"
+    await callback.message.edit_text(
+        f"⚠️ <b>#{app_id} ({name})</b> arizasini bazadan butunlay o‘chirmoqchimisiz?",
+        reply_markup=get_db_clean_confirm_kb(f"db_clean:do_one:{app_id}")
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("db_clean:do_one:"))
+async def db_clean_do_one(callback: CallbackQuery):
+    """Bitta arizani o'chirish"""
+    user_id = callback.from_user.id if callback.from_user else 0
+    perms = await database.get_admin_permissions(user_id)
+    if not perms or not perms.get("is_super"):
+        return
+
+    app_id = int(callback.data.split(":")[2])
+    ok = await database.delete_appointment_by_id(app_id)
+    if ok:
+        await callback.answer(f"🗑 #{app_id} o‘chirildi!", show_alert=False)
+    else:
+        await callback.answer("Ariza topilmadi.", show_alert=False)
+    await db_clean_menu_callback(callback)

@@ -134,7 +134,7 @@ async def init_db():
             appt_migrations_pg = [
                 "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS client_number INTEGER UNIQUE;",
                 "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS prepayment_amount INTEGER;",
-                "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS remaining_amount INTEGER;",
+                "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS remaining_amount INTEGER DEFAULT 60000;",
                 "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS payment_status TEXT DEFAULT 'unpaid';",
                 "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS receipt_file_id TEXT;",
                 "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS receipt_unique_id TEXT;",
@@ -244,7 +244,7 @@ async def init_db():
             appt_migrations_sqlite = {
                 "client_number": "INTEGER",
                 "prepayment_amount": "INTEGER",
-                "remaining_amount": "INTEGER",
+                "remaining_amount": "INTEGER DEFAULT 60000",
                 "payment_status": "TEXT DEFAULT 'unpaid'",
                 "receipt_file_id": "TEXT",
                 "receipt_unique_id": "TEXT",
@@ -814,106 +814,197 @@ async def get_funnel_analytics() -> dict:
 
 async def export_appointments_to_excel(filepath: str) -> str:
     """
-    Barcha arizalar ro'yxatini chiroyli, ustun kengliklari avtomatik moslangan,
-    sarlavhalari qalin va rangli qilib tartiblangan .xlsx fayl sifatida saqlash.
+    2 ta alohida sahifali (Sheet) professional Excel hisoboti:
+    1-sahifa: '✅ Resepshn (To‘laganlar)' — faqat paid mijozlar client_number (100+) bo'yicha, sariq qoldiq ustuni va JAMI summa.
+    2-sahifa: '📋 Barcha arizalar (Umumiy)' — barcha tushgan lidlar holati va rad etish sababi bilan.
     """
     if is_postgres():
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
-            records = await conn.fetch("""
-                SELECT id, created_at, notes, patient_name, phone_number, service, status
+            paid_records = await conn.fetch("""
+                SELECT id, client_number, notes, appointment_date_iso, appointment_slot,
+                       patient_name, phone_number, service, prepayment_amount, remaining_amount
+                FROM appointments
+                WHERE payment_status = 'paid'
+                ORDER BY client_number ASC, id ASC;
+            """)
+            all_records = await conn.fetch("""
+                SELECT id, client_number, created_at, notes, patient_name, phone_number,
+                       service, status, payment_status, rejection_reason
                 FROM appointments
                 ORDER BY id DESC;
             """)
-            rows = [dict(r) for r in records]
+            paid_rows = [dict(r) for r in paid_records]
+            all_rows = [dict(r) for r in all_records]
     else:
         async with aiosqlite.connect(DATABASE_NAME) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute("""
-                SELECT id, created_at, notes, patient_name, phone_number, service, status
+                SELECT id, client_number, notes, appointment_date_iso, appointment_slot,
+                       patient_name, phone_number, service, prepayment_amount, remaining_amount
+                FROM appointments
+                WHERE payment_status = 'paid'
+                ORDER BY client_number ASC, id ASC
+            """) as cursor:
+                paid_rows = [dict(r) for r in await cursor.fetchall()]
+            async with db.execute("""
+                SELECT id, client_number, created_at, notes, patient_name, phone_number,
+                       service, status, payment_status, rejection_reason
                 FROM appointments
                 ORDER BY id DESC
             """) as cursor:
-                rows = [dict(r) for r in await cursor.fetchall()]
+                all_rows = [dict(r) for r in await cursor.fetchall()]
 
     wb = Workbook()
-    ws = wb.active
-    ws.title = "Arizalar"
 
-    headers = [
-        "№",
-        "ID",
-        "Ariza yuborilgan vaqt",
-        "Belgilangan qabul vaqti",
-        "Bemor F.I.Sh",
-        "Telefon raqami",
-        "Tanlangan muammo",
-        "Holati"
-    ]
-    ws.append(headers)
-
-    header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
-    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
-    
     thin_border = Border(
-        left=Side(style='thin', color='D9D9D9'),
-        right=Side(style='thin', color='D9D9D9'),
-        top=Side(style='thin', color='D9D9D9'),
-        bottom=Side(style='thin', color='D9D9D9')
+        left=Side(style="thin", color="CBD5E1"),
+        right=Side(style="thin", color="CBD5E1"),
+        top=Side(style="thin", color="CBD5E1"),
+        bottom=Side(style="thin", color="CBD5E1"),
     )
     zebra_fill = PatternFill(start_color="F9FAFB", end_color="F9FAFB", fill_type="solid")
     white_fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+    yellow_fill = PatternFill(start_color="FEF08A", end_color="FEF08A", fill_type="solid")
 
-    for col_num in range(1, len(headers) + 1):
-        cell = ws.cell(row=1, column=col_num)
-        cell.fill = header_fill
-        cell.font = header_font
+    # --- 1-SAHIFA: ✅ Resepshn (To‘laganlar) ---
+    ws1 = wb.active
+    ws1.title = "✅ Resepshn (To‘laganlar)"
+
+    h1 = [
+        "Tartib №",
+        "Qabul sanasi va vaqti",
+        "Bemor F.I.O.",
+        "Telefon raqami",
+        "Muammosi",
+        "Oldindan to‘langan (Karta)",
+        "Resepshnda olinadi (Qoldiq)"
+    ]
+    ws1.append(h1)
+
+    h1_fill = PatternFill(start_color="0F766E", end_color="0F766E", fill_type="solid")
+    h_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    for col_num in range(1, len(h1) + 1):
+        cell = ws1.cell(row=1, column=col_num)
+        cell.fill = h1_fill
+        cell.font = h_font
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = thin_border
+    ws1.row_dimensions[1].height = 28
 
-    row_index = 1
-    for row in rows:
-        row_index += 1
-        current_fill = zebra_fill if row_index % 2 == 0 else white_fill
-        
-        # created_at formatlash
-        created_val = row.get("created_at")
-        if isinstance(created_val, datetime):
-            created_str = created_val.strftime("%d.%m.%Y %H:%M")
-        else:
-            created_str = str(created_val or "")[:16]
+    for idx, row in enumerate(paid_rows, start=2):
+        cnum = row.get("client_number")
+        num_str = f"№ {cnum}" if cnum is not None else "-"
+        when_str = (
+            f"{row.get('appointment_date_iso')} ({row.get('appointment_slot')})"
+            if row.get("appointment_date_iso")
+            else (row.get("notes") or "")
+        )
+        prepay = int(row.get("prepayment_amount") or 0)
+        prepay_str = f"{prepay:,}".replace(",", " ") + " so‘m" if prepay else "-"
+        rem_val = int(row.get("remaining_amount") or 60000)
 
-        ws.append([
-            row_index - 1,
-            row.get("id"),
-            created_str,
-            row.get("notes"),
-            row.get("patient_name"),
-            row.get("phone_number"),
-            row.get("service"),
-            row.get("status")
+        ws1.append([
+            num_str,
+            when_str,
+            row.get("patient_name") or "",
+            row.get("phone_number") or "",
+            row.get("service") or "",
+            prepay_str,
+            rem_val
         ])
 
-        for col_num in range(1, len(headers) + 1):
-            cell = ws.cell(row=row_index, column=col_num)
-            cell.font = Font(name="Calibri", size=11)
-            cell.border = thin_border
-            cell.fill = current_fill
-            
-            if col_num in (1, 2, 3, 4, 6, 8):
-                cell.alignment = Alignment(horizontal="center", vertical="center")
+        row_fill = zebra_fill if idx % 2 == 0 else white_fill
+        for col_num in range(1, len(h1) + 1):
+            c = ws1.cell(row=idx, column=col_num)
+            c.font = Font(name="Calibri", size=11, bold=(col_num in (1, 7)))
+            c.border = thin_border
+            c.fill = yellow_fill if col_num == 7 else row_fill
+            if col_num == 7:
+                c.number_format = '#,##0" so‘m"'
+                c.alignment = Alignment(horizontal="right", vertical="center")
+            elif col_num in (1, 2, 4, 6):
+                c.alignment = Alignment(horizontal="center", vertical="center")
             else:
-                cell.alignment = Alignment(horizontal="left", vertical="center")
+                c.alignment = Alignment(horizontal="left", vertical="center")
 
-    for col in ws.columns:
-        max_len = 0
-        col_letter = get_column_letter(col[0].column)
-        for cell in col:
-            val_str = str(cell.value or "")
-            if len(val_str) > max_len:
-                max_len = len(val_str)
-        ws.column_dimensions[col_letter].width = max(max_len + 4, 14)
+    # JAMI qatori (pastida SUM formulasi)
+    total_row_idx = len(paid_rows) + 2
+    last_data_row = len(paid_rows) + 1
+    sum_formula = f"=SUM(G2:G{last_data_row})" if paid_rows else 0
+    ws1.append(["", "", "", "", "", "JAMI:", sum_formula])
+    for col_num in range(1, len(h1) + 1):
+        c = ws1.cell(row=total_row_idx, column=col_num)
+        c.font = Font(name="Calibri", size=12, bold=True)
+        c.border = thin_border
+        if col_num in (6, 7):
+            c.fill = yellow_fill
+        if col_num == 6:
+            c.alignment = Alignment(horizontal="right", vertical="center")
+        elif col_num == 7:
+            c.number_format = '#,##0" so‘m"'
+            c.alignment = Alignment(horizontal="right", vertical="center")
 
-    ws.row_dimensions[1].height = 28
+    for col in ws1.columns:
+        max_len = max((len(str(cell.value or "")) for cell in col), default=12)
+        ws1.column_dimensions[get_column_letter(col[0].column)].width = max(max_len + 5, 16)
+
+    # --- 2-SAHIFA: 📋 Barcha arizalar (Umumiy) ---
+    ws2 = wb.create_sheet(title="📋 Barcha arizalar (Umumiy)")
+    h2 = [
+        "ID",
+        "Tartib №",
+        "Ariza vaqti",
+        "Qabul vaqti",
+        "Bemor F.I.O.",
+        "Telefon raqami",
+        "Muammosi",
+        "Holati",
+        "To‘lov holati",
+        "Rad etish sababi"
+    ]
+    ws2.append(h2)
+    h2_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+    for col_num in range(1, len(h2) + 1):
+        cell = ws2.cell(row=1, column=col_num)
+        cell.fill = h2_fill
+        cell.font = h_font
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = thin_border
+    ws2.row_dimensions[1].height = 28
+
+    for idx, row in enumerate(all_rows, start=2):
+        created_val = row.get("created_at")
+        created_str = created_val.strftime("%d.%m.%Y %H:%M") if isinstance(created_val, datetime) else str(created_val or "")[:16]
+        cnum = row.get("client_number")
+        num_str = f"№ {cnum}" if cnum is not None else "-"
+        ws2.append([
+            row.get("id"),
+            num_str,
+            created_str,
+            row.get("notes") or "",
+            row.get("patient_name") or "",
+            row.get("phone_number") or "",
+            row.get("service") or "",
+            row.get("status") or "",
+            row.get("payment_status") or "unpaid",
+            row.get("rejection_reason") or ""
+        ])
+        row_fill = zebra_fill if idx % 2 == 0 else white_fill
+        for col_num in range(1, len(h2) + 1):
+            c = ws2.cell(row=idx, column=col_num)
+            c.font = Font(name="Calibri", size=11)
+            c.border = thin_border
+            c.fill = row_fill
+            c.alignment = Alignment(
+                horizontal="center" if col_num in (1, 2, 3, 6, 9) else "left",
+                vertical="center"
+            )
+
+    for col in ws2.columns:
+        max_len = max((len(str(cell.value or "")) for cell in col), default=12)
+        ws2.column_dimensions[get_column_letter(col[0].column)].width = max(max_len + 4, 14)
+
     wb.save(filepath)
     return filepath
 
@@ -1029,30 +1120,59 @@ async def set_appointment_receipt_retry(app_id: int):
             await db.commit()
 
 
+def _find_smallest_gap_number(used_numbers: list[int], start: int = 100) -> int:
+    """100 dan boshlab mavjud bo'lmagan eng kichik bo'sh tartib raqamini topish"""
+    used_set = {int(n) for n in used_numbers if n is not None and int(n) >= start}
+    candidate = start
+    while candidate in used_set:
+        candidate += 1
+    return candidate
+
+
+async def get_next_available_client_number() -> int:
+    """
+    Bazadagi mavjud client_number larni tekshirib, 100 dan boshlab
+    eng birinchi bo'sh raqamni qaytaradi (masalan 100-119 o'chirilgan bo'lsa 100 dan to'ldiradi).
+    """
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT client_number FROM appointments WHERE client_number >= 100;")
+            return _find_smallest_gap_number([r["client_number"] for r in rows], start=100)
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            async with db.execute("SELECT client_number FROM appointments WHERE client_number >= 100") as cursor:
+                rows = await cursor.fetchall()
+                return _find_smallest_gap_number([r[0] for r in rows], start=100)
+
+
 async def approve_appointment_payment(app_id: int) -> int:
     """
-    Chekni tasdiqlab, mijozga 100 dan boshlanuvchi atomar noyob tartib raqami berish.
-    Ikki admin bir vaqtda bossa ham yoki ikki mijoz bir soniyada tasdiqlansa ham raqam takrorlanmaydi.
+    Chekni tasdiqlab, mijozga 100 dan boshlanuvchi eng birinchi bo'sh tartib raqamini
+    atomar tarzda (tranzaksiya + qulf bilan) biriktirish.
     """
     if is_postgres():
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Bir vaqtda ikki admin tasdiqlasa ham bir xil raqam berilmasligi uchun xact qulfi
+                await conn.execute("SELECT pg_advisory_xact_lock(100100);")
                 row = await conn.fetchrow(
                     "SELECT client_number FROM appointments WHERE id = $1 FOR UPDATE;",
                     app_id
                 )
                 if row and row["client_number"] is not None:
                     await conn.execute(
-                        "UPDATE appointments SET payment_status = 'paid', status = 'Tasdiqlandi' WHERE id = $1;",
+                        "UPDATE appointments SET payment_status = 'paid', status = 'Tasdiqlandi', remaining_amount = COALESCE(remaining_amount, 60000) WHERE id = $1;",
                         app_id
                     )
                     return int(row["client_number"])
 
-                client_num = await conn.fetchval("SELECT nextval('client_number_seq');")
+                used_rows = await conn.fetch("SELECT client_number FROM appointments WHERE client_number >= 100;")
+                client_num = _find_smallest_gap_number([r["client_number"] for r in used_rows], start=100)
                 await conn.execute("""
                     UPDATE appointments
-                    SET client_number = $1, payment_status = 'paid', status = 'Tasdiqlandi'
+                    SET client_number = $1, payment_status = 'paid', status = 'Tasdiqlandi', remaining_amount = 60000
                     WHERE id = $2;
                 """, client_num, app_id)
                 return int(client_num)
@@ -1064,17 +1184,18 @@ async def approve_appointment_payment(app_id: int) -> int:
                     row = await cursor.fetchone()
                 if row and row[0] is not None:
                     await db.execute(
-                        "UPDATE appointments SET payment_status = 'paid', status = 'Tasdiqlandi' WHERE id = ?",
+                        "UPDATE appointments SET payment_status = 'paid', status = 'Tasdiqlandi', remaining_amount = COALESCE(remaining_amount, 60000) WHERE id = ?",
                         (app_id,)
                     )
                     await db.commit()
                     return int(row[0])
 
-                async with db.execute("SELECT COALESCE(MAX(client_number), 99) + 1 FROM appointments") as cursor:
-                    next_num = (await cursor.fetchone())[0]
+                async with db.execute("SELECT client_number FROM appointments WHERE client_number >= 100") as cursor:
+                    used_rows = await cursor.fetchall()
+                next_num = _find_smallest_gap_number([r[0] for r in used_rows], start=100)
                 await db.execute("""
                     UPDATE appointments
-                    SET client_number = ?, payment_status = 'paid', status = 'Tasdiqlandi'
+                    SET client_number = ?, payment_status = 'paid', status = 'Tasdiqlandi', remaining_amount = 60000
                     WHERE id = ?
                 """, (next_num, app_id))
                 await db.commit()
@@ -1265,3 +1386,71 @@ async def export_reception_list_to_excel(rows: list[dict], filepath: str) -> str
     ws.row_dimensions[1].height = 28
     wb.save(filepath)
     return filepath
+
+
+# ==========================================
+# SUPER ADMIN: BAZANI TOZALASH VA TESTLARNI O'CHIRISH
+# ==========================================
+async def get_recent_appointments(limit: int = 20) -> list[dict]:
+    """Oxirgi N ta arizani olish (bittalab o'chirish menyusi uchun)"""
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, patient_name, phone_number, payment_status, client_number FROM appointments ORDER BY id DESC LIMIT $1;",
+                limit
+            )
+            return [dict(r) for r in rows]
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT id, patient_name, phone_number, payment_status, client_number FROM appointments ORDER BY id DESC LIMIT ?",
+                (limit,)
+            ) as cursor:
+                return [dict(r) for r in await cursor.fetchall()]
+
+
+async def delete_appointment_by_id(app_id: int) -> bool:
+    """Bitta arizani va unga bog'liq xabarlarni o'chirish"""
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM appointment_admin_messages WHERE appointment_id = $1;", app_id)
+            await conn.execute("DELETE FROM receipt_admin_messages WHERE appointment_id = $1;", app_id)
+            res = await conn.execute("DELETE FROM appointments WHERE id = $1;", app_id)
+            return res.endswith("1")
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            await db.execute("DELETE FROM appointment_admin_messages WHERE appointment_id = ?", (app_id,))
+            await db.execute("DELETE FROM receipt_admin_messages WHERE appointment_id = ?", (app_id,))
+            cursor = await db.execute("DELETE FROM appointments WHERE id = ?", (app_id,))
+            await db.commit()
+            return cursor.rowcount > 0
+
+
+async def delete_unpaid_test_appointments() -> int:
+    """To'lanmagan (paid bo'lmagan) barcha test yozuvlarni tozalash"""
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT id FROM appointments WHERE payment_status != 'paid' OR payment_status IS NULL;")
+            ids = [r["id"] for r in rows]
+            if not ids:
+                return 0
+            await conn.execute("DELETE FROM appointment_admin_messages WHERE appointment_id = ANY($1::int[]);", ids)
+            await conn.execute("DELETE FROM receipt_admin_messages WHERE appointment_id = ANY($1::int[]);", ids)
+            await conn.execute("DELETE FROM appointments WHERE payment_status != 'paid' OR payment_status IS NULL;")
+            return len(ids)
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            async with db.execute("SELECT id FROM appointments WHERE payment_status != 'paid' OR payment_status IS NULL") as cursor:
+                ids = [r[0] for r in await cursor.fetchall()]
+            if not ids:
+                return 0
+            placeholders = ",".join("?" for _ in ids)
+            await db.execute(f"DELETE FROM appointment_admin_messages WHERE appointment_id IN ({placeholders})", tuple(ids))
+            await db.execute(f"DELETE FROM receipt_admin_messages WHERE appointment_id IN ({placeholders})", tuple(ids))
+            await db.execute("DELETE FROM appointments WHERE payment_status != 'paid' OR payment_status IS NULL")
+            await db.commit()
+            return len(ids)

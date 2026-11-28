@@ -10,7 +10,7 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, BotCommandScopeDefault, BotCommandScopeChat
 
-from config import BOT_TOKEN, ADMIN_IDS, CLINIC_ADDRESS
+from config import BOT_TOKEN, ADMIN_IDS, CLINIC_ADDRESS, CLINIC_REMAINING_AMOUNT
 import database
 from handlers import router, send_reception_list, _fmt_money
 
@@ -143,7 +143,7 @@ async def reception_and_reminder_scheduler(bot: Bot):
                         diff_sec = (appt_dt - now_uz).total_seconds()
                         # Qabulga 2 soat (0 < diff <= 7200 soniya) qolganda eslatma yuborish
                         if 0 < diff_sec <= 7200:
-                            rem = _fmt_money(app.get("remaining_amount") or 0)
+                            rem = _fmt_money(CLINIC_REMAINING_AMOUNT)
                             num = app.get("client_number") or "-"
                             reminder_text = (
                                 f"⏰ <b>Eslatma! Bugun Dr. Zarifa qabulidasiz.</b>\n\n"
