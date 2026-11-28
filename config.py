@@ -52,6 +52,16 @@ CLINIC_WORKING_HOURS: str = "Dushanba — Shanba: 09:00 dan 17:00 gacha\nYakshan
 
 # Asosiy taklif (Offer) va qabul narxi
 CONSULTATION_PRICE: str = os.getenv("CONSULTATION_PRICE", "90 000 so‘m")
+TOTAL_CONSULTATION_PRICE: int = int(os.getenv("TOTAL_CONSULTATION_PRICE", "90000"))
+PREPAYMENT_BASE: int = int(os.getenv("PREPAYMENT_BASE", "30000"))
+
+# Plastik karta to'lov ma'lumotlari
+PAYMENT_CARD_NUMBER: str = os.getenv("PAYMENT_CARD_NUMBER", "8600 XXXX XXXX XXXX")
+PAYMENT_CARD_HOLDER: str = os.getenv("PAYMENT_CARD_HOLDER", "Karta egasi F.I.O.")
+
+# Kasalliklar ro'yxati rejimi (False = 10 ta kasallik, True = 3 ta umumlashgan tugma)
+USE_SHORT_DISEASE_LIST: bool = os.getenv("USE_SHORT_DISEASE_LIST", "false").lower() == "true"
+
 CONSULTATION_OFFER: str = (
     "💡 <i>«Bitta qabulning o‘zida siz va turmush o‘rtog‘ingiz birgalikda suhbatdan o‘tasiz, "
     "barcha eski analizlaringiz ko‘rib chiqiladi va Dr. Zarifa uyda bajarish uchun "

@@ -7,7 +7,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton
 )
-from config import GOOGLE_SHEET_URL
+from config import GOOGLE_SHEET_URL, USE_SHORT_DISEASE_LIST
 
 # O'zbekcha oylar
 UZ_MONTHS = [
@@ -77,6 +77,15 @@ def get_cancel_reply_kb() -> ReplyKeyboardMarkup:
 # ==========================================
 def get_problems_inline_kb() -> InlineKeyboardMarkup:
     """1-bosqich: Bemor shikoyati / muammosini tanlash inline klaviaturasi"""
+    if USE_SHORT_DISEASE_LIST:
+        buttons = [
+            [InlineKeyboardButton(text="👶 1. Farzand bo‘lmayapti (Bepushtlik)", callback_data="prob:bepushtlik")],
+            [InlineKeyboardButton(text="😣 2. Hayz og‘rig‘i va sikl buzilishi", callback_data="prob:hayz_ogriq")],
+            [InlineKeyboardButton(text="📋 3. Boshqa ayollar muammosi", callback_data="prob:boshqa_muammo")],
+            [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="action_cancel")]
+        ]
+        return InlineKeyboardMarkup(inline_keyboard=buttons)
+
     buttons = [
         [
             InlineKeyboardButton(
@@ -262,26 +271,68 @@ def get_time_slots_inline_kb(date_str: str) -> InlineKeyboardMarkup:
 # 5. ADMIN BILDIRISHNOMASI VA PANEL TUGMALARI
 # ==========================================
 def get_admin_appointment_kb(appointment_id: int, current_status: str = "Kutilmoqda") -> InlineKeyboardMarkup:
-    """Adminlarga kelgan ariza ostidagi tugmalar (holatga qarab dinamik belgilanadi)"""
-    is_accepted = "Qabul qilindi" in current_status
-    is_called = "Qo'ng'iroq qilindi" in current_status
-
-    accepted_label = "✅ Qabul qilingan" if is_accepted else "✅ Qabul qilish"
-    called_label = "📞 Qo‘ng‘iroq qilingan" if is_called else "📞 Qo‘ng‘iroq qilish"
-
+    """Adminlarga kelgan yangi ariza ostidagi asosiy 2 ta tugma"""
     buttons = [
         [
             InlineKeyboardButton(
-                text=accepted_label,
-                callback_data=f"adm_app:{appointment_id}:accepted"
+                text="✅ Mijoz bo‘ldi",
+                callback_data=f"adm_lead:{appointment_id}:accept"
             ),
             InlineKeyboardButton(
-                text=called_label,
-                callback_data=f"adm_app:{appointment_id}:called"
+                text="❌ Mijoz bo‘lmadi",
+                callback_data=f"adm_lead:{appointment_id}:reject"
             )
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_admin_reject_reasons_kb(appointment_id: int) -> InlineKeyboardMarkup:
+    """Mijoz bo'lmagan sabablari tugmalari"""
+    buttons = [
+        [
+            InlineKeyboardButton(text="📵 Ko‘tarmadi", callback_data=f"adm_rej:{appointment_id}:not_answered"),
+            InlineKeyboardButton(text="💰 Narx qimmat dedi", callback_data=f"adm_rej:{appointment_id}:expensive")
+        ],
+        [
+            InlineKeyboardButton(text="🤔 O‘ylab ko‘radi", callback_data=f"adm_rej:{appointment_id}:thinking"),
+            InlineKeyboardButton(text="❌ Adashib bosgan", callback_data=f"adm_rej:{appointment_id}:mistake")
+        ],
+        [
+            InlineKeyboardButton(text="⬅️ Orqaga", callback_data=f"adm_rej:{appointment_id}:back")
+        ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_client_receipt_kb(appointment_id: int) -> InlineKeyboardMarkup:
+    """Mijozga to'lov cheki rasmini yuborish tugmasi"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="📸 To‘lov chekini yuborish",
+                callback_data=f"send_receipt:{appointment_id}"
+            )
+        ]
+    ])
+
+
+def get_admin_receipt_check_kb(appointment_id: int) -> InlineKeyboardMarkup:
+    """Chek rasmi ostidagi admin tekshiruv tugmalari"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="✅ Chek haqiqiy (Raqam berish)",
+                callback_data=f"adm_pay:{appointment_id}:approve"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="❌ Chek xato / Qayta so‘rash",
+                callback_data=f"adm_pay:{appointment_id}:reject"
+            )
+        ]
+    ])
 
 
 def get_admin_panel_kb(perms: dict | None = None) -> InlineKeyboardMarkup:
@@ -318,10 +369,14 @@ def get_admin_panel_kb(perms: dict | None = None) -> InlineKeyboardMarkup:
     if row1:
         buttons.append(row1)
 
-    if perms.get("can_view_stats"):
-        buttons.append([
-            InlineKeyboardButton(text="📈 Target natijalari", callback_data="admin_meta_ads")
-        ])
+    if perms.get("can_view_stats") or perms.get("can_manage_appointments"):
+        row_extra = []
+        if perms.get("can_view_stats"):
+            row_extra.append(InlineKeyboardButton(text="📈 Target natijalari", callback_data="admin_meta_ads"))
+        if perms.get("can_manage_appointments") or perms.get("can_view_stats"):
+            row_extra.append(InlineKeyboardButton(text="📋 Resepshn ro‘yxati", callback_data="admin_reception_list"))
+        if row_extra:
+            buttons.append(row_extra)
 
     if perms.get("can_broadcast"):
         buttons.append([

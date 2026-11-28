@@ -19,3 +19,8 @@ class AdminManageState(StatesGroup):
     """Yangi admin qo'shish va huquqlarni belgilash bosqichlari"""
     waiting_for_admin_user = State()
     selecting_permissions = State()
+
+
+class PaymentReceiptState(StatesGroup):
+    """Mijozdan to'lov cheki rasmini kutish holati"""
+    waiting_for_receipt = State()

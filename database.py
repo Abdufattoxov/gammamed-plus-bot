@@ -112,6 +112,39 @@ async def init_db():
             # Mavjud questions jadvalini eski ma'lumotlarga zarar yetkazmasdan kengaytirish
             for col_name in ("username", "full_name", "answer_text", "answered_by"):
                 await conn.execute(f"ALTER TABLE questions ADD COLUMN IF NOT EXISTS {col_name} TEXT;")
+
+            # Chek xabarlarini barcha adminlarda sinxron yangilash jadvali
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS receipt_admin_messages (
+                    id SERIAL PRIMARY KEY,
+                    appointment_id INTEGER,
+                    chat_id BIGINT,
+                    message_id BIGINT,
+                    is_media BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+
+            # Mijoz tartib raqami uchun atomar ketma-ketlik (100 dan boshlanadi)
+            await conn.execute("""
+                CREATE SEQUENCE IF NOT EXISTS client_number_seq START WITH 100 INCREMENT BY 1;
+            """)
+
+            # Mavjud appointments jadvalini eski ma'lumotlarga zarar yetkazmasdan kengaytirish
+            appt_migrations_pg = [
+                "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS client_number INTEGER UNIQUE;",
+                "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS prepayment_amount INTEGER;",
+                "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS remaining_amount INTEGER;",
+                "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS payment_status TEXT DEFAULT 'unpaid';",
+                "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS receipt_file_id TEXT;",
+                "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS receipt_unique_id TEXT;",
+                "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS rejection_reason TEXT;",
+                "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS reminder_sent BOOLEAN DEFAULT FALSE;",
+                "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS appointment_date_iso TEXT;",
+                "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS appointment_slot TEXT;",
+            ]
+            for stmt in appt_migrations_pg:
+                await conn.execute(stmt)
     else:
         async with aiosqlite.connect(DATABASE_NAME) as db:
             await db.execute("""
@@ -192,6 +225,38 @@ async def init_db():
             for col_name in ("username", "full_name", "answer_text", "answered_by"):
                 if col_name not in existing_cols:
                     await db.execute(f"ALTER TABLE questions ADD COLUMN {col_name} TEXT")
+
+            # Chek xabarlarini barcha adminlarda sinxron yangilash jadvali
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS receipt_admin_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    appointment_id INTEGER,
+                    chat_id INTEGER,
+                    message_id INTEGER,
+                    is_media INTEGER DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Mavjud appointments jadvalini eski ma'lumotlarga zarar yetkazmasdan kengaytirish
+            async with db.execute("PRAGMA table_info(appointments)") as cursor:
+                existing_appt_cols = {row[1] for row in await cursor.fetchall()}
+            appt_migrations_sqlite = {
+                "client_number": "INTEGER",
+                "prepayment_amount": "INTEGER",
+                "remaining_amount": "INTEGER",
+                "payment_status": "TEXT DEFAULT 'unpaid'",
+                "receipt_file_id": "TEXT",
+                "receipt_unique_id": "TEXT",
+                "rejection_reason": "TEXT",
+                "reminder_sent": "INTEGER DEFAULT 0",
+                "appointment_date_iso": "TEXT",
+                "appointment_slot": "TEXT",
+            }
+            for col_name, col_def in appt_migrations_sqlite.items():
+                if col_name not in existing_appt_cols:
+                    await db.execute(f"ALTER TABLE appointments ADD COLUMN {col_name} {col_def}")
+            await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_appointments_client_number ON appointments(client_number)")
             await db.commit()
 
 
@@ -256,7 +321,9 @@ async def create_appointment(
     phone_number: str,
     appointment_time: str = "Ko'rsatilmadi",
     region: str = "Bulung'ur",
-    notes: str = ""
+    notes: str = "",
+    appointment_date_iso: str = "",
+    appointment_slot: str = ""
 ) -> int:
     """Yangi qabul arizasini bazaga kiritish"""
     full_notes = f"Qabul vaqti: {appointment_time}" if not notes else f"Qabul: {appointment_time} | {notes}"
@@ -265,17 +332,23 @@ async def create_appointment(
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
             row_id = await conn.fetchval("""
-                INSERT INTO appointments (user_id, service, region, patient_name, phone_number, notes, status)
-                VALUES ($1, $2, $3, $4, $5, $6, 'Kutilmoqda')
+                INSERT INTO appointments (
+                    user_id, service, region, patient_name, phone_number,
+                    notes, status, payment_status, appointment_date_iso, appointment_slot
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, 'Kutilmoqda', 'unpaid', $7, $8)
                 RETURNING id;
-            """, user_id, service, region, patient_name, phone_number, full_notes)
+            """, user_id, service, region, patient_name, phone_number, full_notes, appointment_date_iso, appointment_slot)
             return row_id
     else:
         async with aiosqlite.connect(DATABASE_NAME) as db:
             cursor = await db.execute("""
-                INSERT INTO appointments (user_id, service, region, patient_name, phone_number, notes, status)
-                VALUES (?, ?, ?, ?, ?, ?, 'Kutilmoqda')
-            """, (user_id, service, region, patient_name, phone_number, full_notes))
+                INSERT INTO appointments (
+                    user_id, service, region, patient_name, phone_number,
+                    notes, status, payment_status, appointment_date_iso, appointment_slot
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 'Kutilmoqda', 'unpaid', ?, ?)
+            """, (user_id, service, region, patient_name, phone_number, full_notes, appointment_date_iso, appointment_slot))
             await db.commit()
             return cursor.lastrowid
 
@@ -839,6 +912,355 @@ async def export_appointments_to_excel(filepath: str) -> str:
             if len(val_str) > max_len:
                 max_len = len(val_str)
         ws.column_dimensions[col_letter].width = max(max_len + 4, 14)
+
+    ws.row_dimensions[1].height = 28
+    wb.save(filepath)
+    return filepath
+
+
+# ==========================================
+# TO'LOV, CHEK TEKSHIRISH, ATOMAR RAQAM VA ESLATMA
+# ==========================================
+async def is_receipt_used(file_unique_id: str) -> bool:
+    """Bir xil chek rasmi/fayli (file_unique_id) avval yuborilganligini tekshirish"""
+    if not file_unique_id:
+        return False
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            val = await conn.fetchval(
+                "SELECT 1 FROM appointments WHERE receipt_unique_id = $1 LIMIT 1;",
+                file_unique_id
+            )
+            return val is not None
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            async with db.execute(
+                "SELECT 1 FROM appointments WHERE receipt_unique_id = ? LIMIT 1",
+                (file_unique_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return row is not None
+
+
+async def set_appointment_prepayment(app_id: int, prepay: int, remaining: int):
+    """Mijoz rozi bo'lganda unikal oldindan to'lov va qoldiq summani saqlash"""
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE appointments
+                SET prepayment_amount = $1, remaining_amount = $2,
+                    payment_status = 'waiting_receipt', status = 'Chek kutilmoqda'
+                WHERE id = $3;
+            """, prepay, remaining, app_id)
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            await db.execute("""
+                UPDATE appointments
+                SET prepayment_amount = ?, remaining_amount = ?,
+                    payment_status = 'waiting_receipt', status = 'Chek kutilmoqda'
+                WHERE id = ?
+            """, (prepay, remaining, app_id))
+            await db.commit()
+
+
+async def reject_appointment(app_id: int, reason: str):
+    """Ariza mijoz bo'lmaganligi sababli rad etish"""
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE appointments
+                SET payment_status = 'rejected', rejection_reason = $1, status = $2
+                WHERE id = $3;
+            """, reason, f"Rad etildi ({reason})", app_id)
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            await db.execute("""
+                UPDATE appointments
+                SET payment_status = 'rejected', rejection_reason = ?, status = ?
+                WHERE id = ?
+            """, (reason, f"Rad etildi ({reason})", app_id))
+            await db.commit()
+
+
+async def save_appointment_receipt(app_id: int, file_id: str, file_unique_id: str):
+    """Mijoz yuborgan chekni saqlash va tekshiruv holatiga o'tkazish"""
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE appointments
+                SET receipt_file_id = $1, receipt_unique_id = $2,
+                    payment_status = 'checking', status = 'Chek tekshirilmoqda'
+                WHERE id = $3;
+            """, file_id, file_unique_id, app_id)
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            await db.execute("""
+                UPDATE appointments
+                SET receipt_file_id = ?, receipt_unique_id = ?,
+                    payment_status = 'checking', status = 'Chek tekshirilmoqda'
+                WHERE id = ?
+            """, (file_id, file_unique_id, app_id))
+            await db.commit()
+
+
+async def set_appointment_receipt_retry(app_id: int):
+    """Chek xato bo'lganda qayta so'rash holatiga qaytarish (eski unique_id ni tozalash)"""
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE appointments
+                SET payment_status = 'waiting_receipt', receipt_unique_id = NULL,
+                    status = 'Qayta chek kutilmoqda'
+                WHERE id = $1;
+            """, app_id)
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            await db.execute("""
+                UPDATE appointments
+                SET payment_status = 'waiting_receipt', receipt_unique_id = NULL,
+                    status = 'Qayta chek kutilmoqda'
+                WHERE id = ?
+            """, (app_id,))
+            await db.commit()
+
+
+async def approve_appointment_payment(app_id: int) -> int:
+    """
+    Chekni tasdiqlab, mijozga 100 dan boshlanuvchi atomar noyob tartib raqami berish.
+    Ikki admin bir vaqtda bossa ham yoki ikki mijoz bir soniyada tasdiqlansa ham raqam takrorlanmaydi.
+    """
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT client_number FROM appointments WHERE id = $1 FOR UPDATE;",
+                    app_id
+                )
+                if row and row["client_number"] is not None:
+                    await conn.execute(
+                        "UPDATE appointments SET payment_status = 'paid', status = 'Tasdiqlandi' WHERE id = $1;",
+                        app_id
+                    )
+                    return int(row["client_number"])
+
+                client_num = await conn.fetchval("SELECT nextval('client_number_seq');")
+                await conn.execute("""
+                    UPDATE appointments
+                    SET client_number = $1, payment_status = 'paid', status = 'Tasdiqlandi'
+                    WHERE id = $2;
+                """, client_num, app_id)
+                return int(client_num)
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                async with db.execute("SELECT client_number FROM appointments WHERE id = ?", (app_id,)) as cursor:
+                    row = await cursor.fetchone()
+                if row and row[0] is not None:
+                    await db.execute(
+                        "UPDATE appointments SET payment_status = 'paid', status = 'Tasdiqlandi' WHERE id = ?",
+                        (app_id,)
+                    )
+                    await db.commit()
+                    return int(row[0])
+
+                async with db.execute("SELECT COALESCE(MAX(client_number), 99) + 1 FROM appointments") as cursor:
+                    next_num = (await cursor.fetchone())[0]
+                await db.execute("""
+                    UPDATE appointments
+                    SET client_number = ?, payment_status = 'paid', status = 'Tasdiqlandi'
+                    WHERE id = ?
+                """, (next_num, app_id))
+                await db.commit()
+                return int(next_num)
+            except Exception:
+                await db.rollback()
+                raise
+
+
+async def get_waiting_receipt_appointment_by_user(user_id: int) -> dict | None:
+    """Foydalanuvchining chek kutilayotgan oxirgi arizasini topish (FSM tiklanmagan holatlar uchun)"""
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT * FROM appointments
+                WHERE user_id = $1 AND payment_status = 'waiting_receipt'
+                ORDER BY id DESC LIMIT 1;
+            """, user_id)
+            return dict(row) if row else None
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT * FROM appointments
+                WHERE user_id = ? AND payment_status = 'waiting_receipt'
+                ORDER BY id DESC LIMIT 1
+            """, (user_id,)) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
+
+async def save_admin_receipt_message(appointment_id: int, chat_id: int, message_id: int, is_media: bool = True):
+    """Adminlarga yuborilgan chek rasmi xabarini saqlash"""
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO receipt_admin_messages (appointment_id, chat_id, message_id, is_media)
+                VALUES ($1, $2, $3, $4);
+            """, appointment_id, chat_id, message_id, is_media)
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            await db.execute("""
+                INSERT INTO receipt_admin_messages (appointment_id, chat_id, message_id, is_media)
+                VALUES (?, ?, ?, ?)
+            """, (appointment_id, chat_id, message_id, int(is_media)))
+            await db.commit()
+
+
+async def get_admin_receipt_messages(appointment_id: int) -> list[dict]:
+    """Arizaga tegishli barcha admin chek xabarlarini olish"""
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT chat_id, message_id, is_media FROM receipt_admin_messages
+                WHERE appointment_id = $1;
+            """, appointment_id)
+            return [dict(r) for r in rows]
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT chat_id, message_id, is_media FROM receipt_admin_messages
+                WHERE appointment_id = ?
+            """, (appointment_id,)) as cursor:
+                return [dict(r) for r in await cursor.fetchall()]
+
+
+async def get_paid_appointments_for_dates(target_dates: list[str]) -> list[dict]:
+    """Berilgan YYYY-MM-DD sanalar uchun tasdiqlangan (paid) mijozlarni tartib raqami bo'yicha olish"""
+    if not target_dates:
+        return []
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT * FROM appointments
+                WHERE payment_status = 'paid' AND appointment_date_iso = ANY($1::text[])
+                ORDER BY client_number ASC, appointment_slot ASC;
+            """, target_dates)
+            return [dict(r) for r in rows]
+    else:
+        placeholders = ",".join("?" for _ in target_dates)
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(f"""
+                SELECT * FROM appointments
+                WHERE payment_status = 'paid' AND appointment_date_iso IN ({placeholders})
+                ORDER BY client_number ASC, appointment_slot ASC
+            """, tuple(target_dates)) as cursor:
+                return [dict(r) for r in await cursor.fetchall()]
+
+
+async def get_paid_unreminded_appointments() -> list[dict]:
+    """Hali 2 soatlik eslatma yuborilmagan tasdiqlangan mijozlarni olish"""
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT * FROM appointments
+                WHERE payment_status = 'paid' AND (reminder_sent IS FALSE OR reminder_sent IS NULL)
+                  AND appointment_date_iso IS NOT NULL AND appointment_date_iso != '';
+            """)
+            return [dict(r) for r in rows]
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT * FROM appointments
+                WHERE payment_status = 'paid' AND (reminder_sent = 0 OR reminder_sent IS NULL)
+                  AND appointment_date_iso IS NOT NULL AND appointment_date_iso != ''
+            """) as cursor:
+                return [dict(r) for r in await cursor.fetchall()]
+
+
+async def mark_reminder_sent(app_id: int):
+    """Mijozga 2 soatlik eslatma yuborilganini belgilash"""
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE appointments SET reminder_sent = TRUE WHERE id = $1;", app_id)
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            await db.execute("UPDATE appointments SET reminder_sent = 1 WHERE id = ?", (app_id,))
+            await db.commit()
+
+
+async def export_reception_list_to_excel(rows: list[dict], filepath: str) -> str:
+    """Resepshn uchun tasdiqlangan mijozlar ro'yxatini .xlsx faylga chiqarish"""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Resepshn ro'yxati"
+
+    headers = [
+        "Tartib №",
+        "Bemor ismi",
+        "Telefon raqami",
+        "Sana",
+        "Vaqt oralig'i",
+        "Yo'nalish",
+        "Oldindan to'langan (so'm)",
+        "Resepshnda olinadi (so'm)",
+    ]
+
+    header_fill = PatternFill(start_color="0F766E", end_color="0F766E", fill_type="solid")
+    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    thin_border = Border(
+        left=Side(style="thin", color="CBD5E1"),
+        right=Side(style="thin", color="CBD5E1"),
+        top=Side(style="thin", color="CBD5E1"),
+        bottom=Side(style="thin", color="CBD5E1"),
+    )
+
+    ws.append(headers)
+    for col_num in range(1, len(headers) + 1):
+        cell = ws.cell(row=1, column=col_num)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = thin_border
+
+    for idx, row in enumerate(rows, start=2):
+        ws.append([
+            f"№ {row.get('client_number') or '-'}",
+            row.get("patient_name") or "",
+            row.get("phone_number") or "",
+            row.get("appointment_date_iso") or "",
+            row.get("appointment_slot") or "",
+            row.get("service") or "",
+            row.get("prepayment_amount") or 0,
+            row.get("remaining_amount") or 0,
+        ])
+        for col_num in range(1, len(headers) + 1):
+            c = ws.cell(row=idx, column=col_num)
+            c.font = Font(name="Calibri", size=11)
+            c.border = thin_border
+            c.alignment = Alignment(
+                horizontal="center" if col_num in (1, 3, 4, 5, 7, 8) else "left",
+                vertical="center"
+            )
+
+    for col in ws.columns:
+        max_len = max((len(str(cell.value or "")) for cell in col), default=12)
+        ws.column_dimensions[get_column_letter(col[0].column)].width = max(max_len + 4, 14)
 
     ws.row_dimensions[1].height = 28
     wb.save(filepath)

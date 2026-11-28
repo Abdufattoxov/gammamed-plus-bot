@@ -1,7 +1,7 @@
 import os
 import re
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from aiogram import Router, F, Bot
 from aiogram.filters import Command, CommandStart, CommandObject, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -25,6 +25,10 @@ from config import (
     CLINIC_ADDRESS,
     CLINIC_WORKING_HOURS,
     CONSULTATION_PRICE,
+    TOTAL_CONSULTATION_PRICE,
+    PREPAYMENT_BASE,
+    PAYMENT_CARD_NUMBER,
+    PAYMENT_CARD_HOLDER,
     CONSULTATION_OFFER,
     SAFETY_NOTICE,
     GOOGLE_SHEET_URL
@@ -35,7 +39,8 @@ import meta_ads
 from states import (
     AppointmentState,
     AdminBroadcastState,
-    AdminManageState
+    AdminManageState,
+    PaymentReceiptState
 )
 from keyboards import (
     get_main_menu_kb,
@@ -46,12 +51,17 @@ from keyboards import (
     generate_calendar_kb,
     get_time_slots_inline_kb,
     get_admin_appointment_kb,
+    get_admin_reject_reasons_kb,
+    get_client_receipt_kb,
+    get_admin_receipt_check_kb,
     get_admin_panel_kb,
     get_admin_manage_kb,
     get_admin_perm_toggle_kb,
     get_admin_list_kb,
     get_services_info_inline_kb
 )
+
+UZ_TZ = timezone(timedelta(hours=5))
 
 router = Router()
 
@@ -641,7 +651,9 @@ async def process_time_slot_selection(callback: CallbackQuery, state: FSMContext
         service=problem,
         patient_name=patient_name,
         phone_number=phone_number,
-        appointment_time=full_appointment_time
+        appointment_time=full_appointment_time,
+        appointment_date_iso=date_str,
+        appointment_slot=time_slot
     )
     await state.clear()
     await track_event(callback, "step_6_confirmed")
@@ -757,73 +769,464 @@ async def send_excel_backup_to_admins(bot: Bot, app_id: int):
 
 
 # ==========================================
-# 7. ADMIN ARIZA STATUSINI O'ZGARTIRISH
+# 7. MIJOZ TASDIQLASH, TO'LOV CHEKI VA RAQAM BERISH
 # ==========================================
-@router.callback_query(F.data.startswith("adm_app:"))
-async def process_admin_appointment_action(callback: CallbackQuery, bot: Bot):
-    """Admin ariza holatini o'zgartirishi — BARCHA adminlarda bir vaqtda sinxron yangilanadi"""
-    user_id = callback.from_user.id if callback.from_user else 0
-    perms = await database.get_admin_permissions(user_id)
-    if not perms or not perms.get("can_manage_appointments"):
+def _fmt_money(amount: int) -> str:
+    """Pul miqdorini bo'sh joylar bilan chiroyli formatlash (30 014)"""
+    return f"{int(amount):,}".replace(",", " ")
+
+
+async def _update_all_admin_appointment_msgs(bot: Bot, app_id: int, status_line: str, reply_markup=None, source_html: str = ""):
+    """Arizaga tegishli barcha admin xabarlaridagi holat qatorini HTML ni buzmasdan yangilash"""
+    admin_messages = await database.get_admin_appointment_messages(app_id)
+    if not admin_messages:
         return
 
-    parts = callback.data.split(":")
-    app_id = int(parts[1])
-    action = parts[2]
+    base_html = source_html
+    if not base_html:
+        app = await database.get_appointment_by_id(app_id)
+        if not app:
+            return
+        clean_phone = re.sub(r"\D", "", app.get("phone_number") or "")
+        base_html = (
+            f"🔔 <b>QABUL ARIZASI (#A-{app_id})</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"👤 <b>Bemor:</b> {app.get('patient_name', '')}\n"
+            f"📞 <b>Telefon:</b> <a href='tel:+{clean_phone}'>{app.get('phone_number', '')}</a>\n"
+            f"🩺 <b>Yo‘nalish:</b> {app.get('service', '')}\n"
+            f"🗓 <b>Vaqt:</b> <b>{app.get('notes', '')}</b>\n"
+            f"🆔 <b>Telegram ID:</b> <code>{app.get('user_id', '')}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"📌 <b>Holati:</b> <i>Kutilmoqda</i>"
+        )
 
-    admin_name = callback.from_user.first_name if callback.from_user else "Admin"
-
-    if action == "accepted":
-        status_label = "Qabul qilindi"
-        status_text = f"✅ Qabul qilindi ({admin_name} tomonidan)"
-    elif action == "called":
-        status_label = "Qo'ng'iroq qilindi"
-        status_text = f"📞 Qo‘ng‘iroq qilindi ({admin_name} tomonidan)"
+    if "📌 <b>Holati:</b>" in base_html:
+        updated_text = re.sub(r"📌 <b>Holati:</b>.*", f"📌 <b>Holati:</b> <b>{status_line}</b>", base_html, flags=re.DOTALL)
+    elif "📌 Holati:" in base_html:
+        updated_text = re.sub(r"📌 Holati:.*", f"📌 <b>Holati:</b> <b>{status_line}</b>", base_html, flags=re.DOTALL)
     else:
-        status_label = "Noma'lum"
-        status_text = "Noma'lum"
+        updated_text = f"{base_html}\n\n📌 <b>Holati:</b> <b>{status_line}</b>"
 
-    # 1. Bazada arizaning joriy holatini yangilash
-    await database.update_appointment_status(app_id, status_label)
-
-    # 2. Xabar matnidagi holat qatorini yangilash
-    current_html = callback.message.html_text or ""
-    if "📌 <b>Holati:</b>" in current_html:
-        updated_text = re.sub(r"📌 <b>Holati:</b>.*", f"📌 <b>Holati:</b> <b>{status_text}</b>", current_html, flags=re.DOTALL)
-    elif "📌 Holati:" in current_html:
-        updated_text = re.sub(r"📌 Holati:.*", f"📌 <b>Holati:</b> <b>{status_text}</b>", current_html, flags=re.DOTALL)
-    else:
-        updated_text = f"{current_html}\n\n📌 <b>Holati:</b> <b>{status_text}</b>"
-
-    updated_kb = get_admin_appointment_kb(app_id, status_label)
-
-    # 3. Ushbu arizaga tegishli barcha admin xabarlarini topamiz
-    admin_messages = await database.get_admin_appointment_messages(app_id)
-
-    # Agar joriy bosilgan xabar bazaga tushmagan bo'lsa, ro'yxatga kiritamiz
-    current_chat_id = callback.message.chat.id
-    current_msg_id = callback.message.message_id
-    already_tracked = any(
-        m.get("chat_id") == current_chat_id and m.get("message_id") == current_msg_id 
-        for m in admin_messages
-    )
-    if not already_tracked:
-        admin_messages.append({"chat_id": current_chat_id, "message_id": current_msg_id})
-        await database.save_admin_appointment_message(app_id, current_chat_id, current_msg_id)
-
-    # 4. BARCHA adminlarning xabarlarini bir vaqtning o'zida yangilash
     for m in admin_messages:
         try:
             await bot.edit_message_text(
                 chat_id=m["chat_id"],
                 message_id=m["message_id"],
                 text=updated_text,
-                reply_markup=updated_kb
+                reply_markup=reply_markup
             )
         except Exception:
             pass
 
-    await callback.answer(f"Holat barcha adminlarda yangilandi: {status_text}")
+
+async def send_reception_list(bot: Bot, target_chat_id: int, target_dates: list[str], title_label: str):
+    """Tasdiqlangan (paid) mijozlar ro'yxatini matn + Excel (.xlsx) ko'rinishida yuborish"""
+    rows = await database.get_paid_appointments_for_dates(target_dates)
+    if not rows:
+        await bot.send_message(
+            chat_id=target_chat_id,
+            text=f"📋 <b>{title_label}</b>\n\n<i>Hozircha tasdiqlangan (to‘lov qilgan) mijozlar yo‘q.</i>"
+        )
+        return
+
+    lines = [f"📋 <b>{title_label} ({len(rows)} nafar):</b>\n━━━━━━━━━━━━━━━━━━━"]
+    for r in rows:
+        num = r.get("client_number") or "-"
+        name = r.get("patient_name") or "Noma'lum"
+        phone = r.get("phone_number") or ""
+        date_iso = r.get("appointment_date_iso") or ""
+        slot = r.get("appointment_slot") or ""
+        rem = _fmt_money(r.get("remaining_amount") or 0)
+        lines.append(
+            f"🎫 <b>№ {num}</b> | {name} | <code>{phone}</code>\n"
+            f"   🕒 {date_iso} ({slot}) | 💵 Resepshnda olinadi: <b>{rem} so‘m</b>"
+        )
+
+    await bot.send_message(chat_id=target_chat_id, text="\n".join(lines))
+
+    filename = f"resepshn_royxati_{target_chat_id}_{datetime.now(UZ_TZ).strftime('%Y%m%d_%H%M')}.xlsx"
+    try:
+        await database.export_reception_list_to_excel(rows, filename)
+        doc = FSInputFile(filename, filename="resepshn_royxati.xlsx")
+        await bot.send_document(
+            chat_id=target_chat_id,
+            document=doc,
+            caption=f"📥 <b>{title_label}</b> — Resepshn uchun tayyor Excel ro‘yxat"
+        )
+    except Exception:
+        pass
+    finally:
+        if os.path.exists(filename):
+            try:
+                os.remove(filename)
+            except Exception:
+                pass
+
+
+REJECT_REASONS = {
+    "not_answered": "📵 Ko‘tarmadi",
+    "expensive": "💰 Narx qimmat dedi",
+    "thinking": "🤔 O‘ylab ko‘radi",
+    "mistake": "❌ Adashib bosgan",
+}
+
+
+@router.callback_query(F.data.startswith("adm_lead:"))
+async def process_admin_lead_decision(callback: CallbackQuery, bot: Bot):
+    """Admin ariza bo'yicha 'Mijoz bo'ldi' yoki 'Mijoz bo'lmadi' tugmasini bosganda"""
+    user_id = callback.from_user.id if callback.from_user else 0
+    perms = await database.get_admin_permissions(user_id)
+    if not perms or not perms.get("can_manage_appointments"):
+        return
+
+    _, app_id_str, action = callback.data.split(":")
+    app_id = int(app_id_str)
+    app = await database.get_appointment_by_id(app_id)
+    if not app:
+        await callback.answer("Ariza topilmadi.", show_alert=True)
+        return
+
+    if action == "reject":
+        await callback.answer()
+        try:
+            await callback.message.edit_reply_markup(reply_markup=get_admin_reject_reasons_kb(app_id))
+        except Exception:
+            pass
+        return
+
+    if action == "accept":
+        if app.get("payment_status") == "paid":
+            await callback.answer(f"Bu mijoz allaqachon tasdiqlangan (№ {app.get('client_number')})!", show_alert=True)
+            return
+
+        prepay = PREPAYMENT_BASE + (app_id % 99) + 1
+        remaining = TOTAL_CONSULTATION_PRICE - prepay
+        await database.set_appointment_prepayment(app_id, prepay, remaining)
+
+        status_line = f"🟡 Mijoz rozi bo‘ldi — {_fmt_money(prepay)} so‘m chek kutilmoqda"
+        await _update_all_admin_appointment_msgs(
+            bot=bot,
+            app_id=app_id,
+            status_line=status_line,
+            reply_markup=None,
+            source_html=callback.message.html_text or ""
+        )
+
+        # Mijozga avtomatik karta va unikal summa xabarini yuborish
+        client_msg = (
+            f"✅ <b>Qabulga yozilish tasdiqlandi!</b>\n\n"
+            f"Joyingizni boshqa bemorga berib yubormasligimiz uchun oldindan to‘lovni quyidagi kartaga o‘tkazing:\n"
+            f"💳 <b>Karta raqami:</b> <code>{PAYMENT_CARD_NUMBER}</code> ({PAYMENT_CARD_HOLDER})\n"
+            f"💰 <b>Oldindan to‘lov (aniq summa):</b> <b>{_fmt_money(prepay)} so‘m</b> <i>(iltimos, aynan shu summani o‘tkazing)</i>\n"
+            f"🏥 <b>Klinikada to‘lanadigan qoldiq:</b> <b>{_fmt_money(remaining)} so‘m</b>\n\n"
+            f"👇 To‘lov qilgach, pastdagi tugmani bosib chek rasmini yuboring!"
+        )
+        try:
+            await bot.send_message(
+                chat_id=app["user_id"],
+                text=client_msg,
+                reply_markup=get_client_receipt_kb(app_id)
+            )
+            await callback.answer(f"Mijozga {_fmt_money(prepay)} so‘m to‘lov xabari yuborildi!")
+        except Exception:
+            await callback.answer("⚠️ Mijozga xabar yuborib bo‘lmadi (botni bloklagan bo‘lishi mumkin).", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("adm_rej:"))
+async def process_admin_reject_reason(callback: CallbackQuery, bot: Bot):
+    """Admin 'Mijoz bo'lmadi' sababini tanlaganda"""
+    user_id = callback.from_user.id if callback.from_user else 0
+    perms = await database.get_admin_permissions(user_id)
+    if not perms or not perms.get("can_manage_appointments"):
+        return
+
+    _, app_id_str, reason_code = callback.data.split(":")
+    app_id = int(app_id_str)
+
+    if reason_code == "back":
+        await callback.answer()
+        try:
+            await callback.message.edit_reply_markup(reply_markup=get_admin_appointment_kb(app_id))
+        except Exception:
+            pass
+        return
+
+    reason_text = REJECT_REASONS.get(reason_code, "Rad etildi")
+    await database.reject_appointment(app_id, reason_text)
+
+    status_line = f"🔴 Mijoz bo‘lmadi | Sabab: {reason_text}"
+    await _update_all_admin_appointment_msgs(
+        bot=bot,
+        app_id=app_id,
+        status_line=status_line,
+        reply_markup=None,
+        source_html=callback.message.html_text or ""
+    )
+    await callback.answer(f"Sabab saqlandi: {reason_text}")
+
+
+@router.callback_query(F.data.startswith("send_receipt:"))
+async def start_receipt_upload(callback: CallbackQuery, state: FSMContext):
+    """Mijoz '📸 To'lov chekini yuborish' tugmasini bosganda"""
+    app_id = int(callback.data.split(":", 1)[1])
+    app = await database.get_appointment_by_id(app_id)
+    if not app:
+        await callback.answer("Ariza topilmadi.", show_alert=True)
+        return
+    if app.get("payment_status") == "paid":
+        await callback.answer("To‘lovingiz allaqachon tasdiqlangan!", show_alert=True)
+        return
+
+    await state.set_state(PaymentReceiptState.waiting_for_receipt)
+    await state.update_data(receipt_app_id=app_id)
+    await callback.answer()
+    prepay = app.get("prepayment_amount") or PREPAYMENT_BASE
+    await callback.message.answer(
+        f"📸 <b>To‘lov cheki skrinshotini (rasmini) yuboring:</b>\n\n"
+        f"💰 Kutilayotgan aniq summa: <b>{_fmt_money(prepay)} so‘m</b>\n"
+        f"<i>(Chekni rasm yoki PDF fayl ko‘rinishida shu yerga tashlang)</i>",
+        reply_markup=get_cancel_reply_kb()
+    )
+
+
+@router.message(PaymentReceiptState.waiting_for_receipt, F.text)
+async def receipt_text_warning(message: Message, state: FSMContext):
+    """Chek kutilayotganda mijoz rasm o'rniga matn yozsa"""
+    if is_menu_navigation(message.text):
+        await state.clear()
+        if "Bekor qilish" in message.text:
+            await message.answer("Jarayon bekor qilindi.", reply_markup=get_main_menu_kb())
+        return
+    await message.answer("⚠️ Iltimos, to‘lov chekining skrinshotini (rasmini) yuboring.")
+
+
+@router.message(PaymentReceiptState.waiting_for_receipt, F.photo | F.document)
+async def process_receipt_in_state(message: Message, state: FSMContext, bot: Bot):
+    """FSM holatida chek rasm/PDF qabul qilish"""
+    data = await state.get_data()
+    app_id = data.get("receipt_app_id")
+    await _handle_receipt_submission(message, state, bot, app_id)
+
+
+@router.message(F.photo | F.document)
+async def process_receipt_direct_fallback(message: Message, state: FSMContext, bot: Bot):
+    """Mijoz tugmani bosmasdan (yoki server restartdan keyin) to'g'ridan-to'g'ri chek tashlasa"""
+    user_id = message.from_user.id if message.from_user else 0
+    app = await database.get_waiting_receipt_appointment_by_user(user_id)
+    if not app:
+        return
+    await _handle_receipt_submission(message, state, bot, app["id"])
+
+
+async def _handle_receipt_submission(message: Message, state: FSMContext, bot: Bot, app_id: int | None):
+    """Chek rasmi yoki PDF ni tekshirish, dublikatdan himoyalash va adminlarga yuborish"""
+    user_id = message.from_user.id if message.from_user else 0
+    app = await database.get_appointment_by_id(app_id) if app_id else await database.get_waiting_receipt_appointment_by_user(user_id)
+    if not app:
+        await state.clear()
+        return
+
+    if app.get("payment_status") == "paid":
+        await state.clear()
+        await message.answer(
+            f"✅ Sizning to‘lovingiz allaqachon tasdiqlangan (Tartib raqamingiz: <b>№ {app.get('client_number')}</b>).",
+            reply_markup=get_main_menu_kb()
+        )
+        return
+
+    if message.photo:
+        file_id = message.photo[-1].file_id
+        file_unique_id = message.photo[-1].file_unique_id
+        is_photo = True
+    elif message.document:
+        file_id = message.document.file_id
+        file_unique_id = message.document.file_unique_id
+        is_photo = False
+    else:
+        await message.answer("⚠️ Iltimos, to‘lov chekining skrinshotini (rasmini) yuboring.")
+        return
+
+    if await database.is_receipt_used(file_unique_id):
+        await message.answer("❌ Bu chek avval yuborilgan! Iltimos, yangi to‘lov chekini yuboring.")
+        return
+
+    await database.save_appointment_receipt(app["id"], file_id, file_unique_id)
+    await state.clear()
+
+    # O'zbekiston vaqti (UTC+5) bo'yicha xotirjam qiluvchi javob
+    now_uz = datetime.now(UZ_TZ)
+    if 8 <= now_uz.hour < 20:
+        calm_text = (
+            "⏳ <b>Chekingiz muvaffaqiyatli qabul qilindi!</b>\n\n"
+            "To‘lov haqiqiyligi ma’muriyat tomonidan inson qo‘li bilan tekshirilib, "
+            "<b>tez orada</b> tasdiqlanadi. Xavotir olmang, tasdiqlanishi bilan sizga "
+            "shaxsiy tartib raqamingiz va rasmiy chiptangiz yuboriladi."
+        )
+    else:
+        calm_text = (
+            "🌙 <b>Chekingiz muvaffaqiyatli qabul qilindi!</b>\n\n"
+            "Hozir ish vaqti yakunlangani sababli, chekingiz <b>ertaga ertalab soat 08:30 da</b> "
+            "ma’muriyat tomonidan inson qo‘li bilan tekshirilib tasdiqlanadi. Xavotir olmang, "
+            "joyingiz band qilindi — ertaga ertalab sizga shaxsiy tartib raqamingiz yuboriladi."
+        )
+
+    await message.answer(text=calm_text, reply_markup=get_main_menu_kb())
+
+    prepay = app.get("prepayment_amount") or PREPAYMENT_BASE
+    clean_phone = re.sub(r"\D", "", app.get("phone_number") or "")
+    admin_caption = (
+        f"💳 <b>YANGI TO‘LOV CHEKI (#A-{app['id']})</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 <b>Bemor:</b> {app.get('patient_name', '')}\n"
+        f"📞 <b>Telefon:</b> <a href='tel:+{clean_phone}'>{app.get('phone_number', '')}</a>\n"
+        f"🗓 <b>Qabul vaqti:</b> {app.get('notes', '')}\n"
+        f"💰 <b>Kutilayotgan unikal summa:</b> <b>{_fmt_money(prepay)} so‘m</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"<i>Chekdagi summani tekshirib tasdiqlang:</i>"
+    )
+
+    target_admins = await database.get_admins_with_permission("can_manage_appointments")
+    kb = get_admin_receipt_check_kb(app["id"])
+
+    for adm_id in target_admins:
+        try:
+            if is_photo:
+                sent = await bot.send_photo(chat_id=adm_id, photo=file_id, caption=admin_caption, reply_markup=kb)
+            else:
+                sent = await bot.send_document(chat_id=adm_id, document=file_id, caption=admin_caption, reply_markup=kb)
+            await database.save_admin_receipt_message(app["id"], sent.chat.id, sent.message_id, is_media=True)
+        except Exception:
+            pass
+
+    if ADMIN_GROUP_ID:
+        try:
+            if is_photo:
+                sent = await bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=file_id, caption=admin_caption, reply_markup=kb)
+            else:
+                sent = await bot.send_document(chat_id=ADMIN_GROUP_ID, document=file_id, caption=admin_caption, reply_markup=kb)
+            await database.save_admin_receipt_message(app["id"], sent.chat.id, sent.message_id, is_media=True)
+        except Exception:
+            pass
+
+
+@router.callback_query(F.data.startswith("adm_pay:"))
+async def process_admin_payment_verification(callback: CallbackQuery, bot: Bot):
+    """Admin chekni tasdiqlashi ('✅ Chek haqiqiy') yoki rad etishi ('❌ Chek xato')"""
+    user_id = callback.from_user.id if callback.from_user else 0
+    perms = await database.get_admin_permissions(user_id)
+    if not perms or not perms.get("can_manage_appointments"):
+        return
+
+    _, app_id_str, action = callback.data.split(":")
+    app_id = int(app_id_str)
+    app = await database.get_appointment_by_id(app_id)
+    if not app:
+        await callback.answer("Ariza topilmadi.", show_alert=True)
+        return
+
+    prepay = app.get("prepayment_amount") or PREPAYMENT_BASE
+    remaining = app.get("remaining_amount") or (TOTAL_CONSULTATION_PRICE - prepay)
+    admin_msgs = await database.get_admin_receipt_messages(app_id)
+
+    if action == "reject":
+        await database.set_appointment_receipt_retry(app_id)
+        try:
+            await bot.send_message(
+                chat_id=app["user_id"],
+                text=(
+                    f"⚠️ Yuborgan chekingiz tasdiqlanmadi (summa mos kelmadi yoki chek noaniq).\n\n"
+                    f"Iltimos, <b>{_fmt_money(prepay)} so‘m</b> to‘lov chekini qaytadan yuboring."
+                ),
+                reply_markup=get_client_receipt_kb(app_id)
+            )
+        except Exception:
+            pass
+
+        reject_caption = (
+            f"❌ <b>Chek rad etildi — qayta so‘raldi (#A-{app_id})</b>\n"
+            f"👤 {app.get('patient_name', '')} | Kutilgan: <b>{_fmt_money(prepay)} so‘m</b>"
+        )
+        for m in admin_msgs:
+            try:
+                await bot.edit_message_caption(
+                    chat_id=m["chat_id"],
+                    message_id=m["message_id"],
+                    caption=reject_caption,
+                    reply_markup=None
+                )
+            except Exception:
+                pass
+        await callback.answer("Chek rad etildi va mijozdan qayta so‘raldi.")
+        return
+
+    if action == "approve":
+        client_number = await database.approve_appointment_payment(app_id)
+
+        date_disp = format_uz_date(app.get("appointment_date_iso") or "") if app.get("appointment_date_iso") else (app.get("notes") or "")
+        time_disp = app.get("appointment_slot") or ""
+        when_str = f"{date_disp} | {time_disp}".strip(" |")
+
+        ticket_text = (
+            f"🎉 <b>XUSHXABAR! To‘lovingiz tasdiqlandi, siz Dr. Zarifa qabuliga rasman yozildingiz!</b>\n\n"
+            f"🎫 <b>Sizning tartib raqamingiz: № {client_number}</b>\n"
+            f"📅 <b>Belgilangan kun va vaqt:</b> {when_str}\n"
+            f"🏥 <b>Manzil:</b> Bulung‘ur tumani, «Yulduz» kinoteatri yonidagi <b>Gammamed Plus</b> klinikasi.\n"
+            f"💵 <b>Klinika resepshnida to‘lanadigan qoldiq:</b> <b>{_fmt_money(remaining)} so‘m</b>.\n"
+            f"📋 <b>O‘zingiz bilan oling:</b> Barcha eski UTT va analiz qog‘ozlaringizni.\n\n"
+            f"📌 <i>Belgilangan kunda klinikaga kelib, resepshnga ushbu xabarni va <b>№ {client_number}</b> raqamingizni ko‘rsating.</i>"
+        )
+        try:
+            await bot.send_message(chat_id=app["user_id"], text=ticket_text)
+        except Exception:
+            pass
+
+        approved_caption = (
+            f"✅ <b>Tasdiqlandi | Mijoz raqami: № {client_number} | To‘lov: {_fmt_money(prepay)} so‘m</b>\n"
+            f"👤 {app.get('patient_name', '')} | 📞 {app.get('phone_number', '')}\n"
+            f"🗓 {when_str}"
+        )
+        for m in admin_msgs:
+            try:
+                await bot.edit_message_caption(
+                    chat_id=m["chat_id"],
+                    message_id=m["message_id"],
+                    caption=approved_caption,
+                    reply_markup=None
+                )
+            except Exception:
+                pass
+
+        await _update_all_admin_appointment_msgs(
+            bot=bot,
+            app_id=app_id,
+            status_line=f"🟢 Tasdiqlandi | Mijoz raqami: № {client_number} | To‘lov: {_fmt_money(prepay)} so‘m",
+            reply_markup=None
+        )
+
+        # Google Sheets'ga tasdiqlangan client_number bilan uzatish
+        asyncio.create_task(google_sheets.append_lead_to_google_sheet({
+            "id": app_id,
+            "client_number": client_number,
+            "date": datetime.now(UZ_TZ).strftime("%d.%m.%Y %H:%M"),
+            "patient_name": app.get("patient_name", ""),
+            "phone_number": app.get("phone_number", ""),
+            "service": app.get("service", ""),
+            "appointment_time": when_str,
+            "status": f"To‘landi (№ {client_number})",
+            "user_id": app.get("user_id", 0)
+        }))
+
+        await callback.answer(f"Tasdiqlandi! Mijoz raqami: № {client_number}")
+
+
+@router.callback_query(F.data.startswith("adm_app:"))
+async def process_admin_appointment_action(callback: CallbackQuery, bot: Bot):
+    """Eski arizalar tugmalari uchun moslik"""
+    user_id = callback.from_user.id if callback.from_user else 0
+    perms = await database.get_admin_permissions(user_id)
+    if not perms or not perms.get("can_manage_appointments"):
+        return
+    await callback.answer("Ushbu ariza eski formatda.", show_alert=False)
 
 
 # ==========================================
@@ -951,6 +1354,26 @@ async def admin_meta_ads_callback(callback: CallbackQuery):
             f"❌ Meta Ads ma'lumotlarini yuklashda xatolik yuz berdi: {str(e)[:250]}",
             reply_markup=get_admin_panel_kb(perms)
         )
+
+
+@router.callback_query(F.data == "admin_reception_list")
+async def admin_reception_list_callback(callback: CallbackQuery, bot: Bot):
+    """Bugungi va ertangi kun uchun tasdiqlangan (paid) mijozlar resepshn ro'yxati"""
+    user_id = callback.from_user.id if callback.from_user else 0
+    perms = await database.get_admin_permissions(user_id)
+    if not perms or not (perms.get("can_manage_appointments") or perms.get("can_view_stats")):
+        return
+
+    await callback.answer("Resepshn ro‘yxati tayyorlanmoqda...")
+    now_uz = datetime.now(UZ_TZ)
+    today_str = now_uz.strftime("%Y-%m-%d")
+    tomorrow_str = (now_uz + timedelta(days=1)).strftime("%Y-%m-%d")
+    await send_reception_list(
+        bot=bot,
+        target_chat_id=callback.message.chat.id,
+        target_dates=[today_str, tomorrow_str],
+        title_label=f"Bugun ({today_str}) va Ertaga ({tomorrow_str}) Resepshn ro‘yxati"
+    )
 
 
 @router.callback_query(F.data == "admin_google_sheets")
