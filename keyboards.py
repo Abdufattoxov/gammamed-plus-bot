@@ -400,6 +400,9 @@ def get_admin_panel_kb(perms: dict | None = None) -> InlineKeyboardMarkup:
         if perms.get("is_super"):
             adm_row.append(InlineKeyboardButton(text="🗑 Bazani tozalash", callback_data="db_clean:menu"))
         buttons.append(adm_row)
+        buttons.append([
+            InlineKeyboardButton(text="💳 Karta sozlamalari", callback_data="admin_card_settings")
+        ])
 
     buttons.append([
         InlineKeyboardButton(text="❌ Yopish", callback_data="admin_close")

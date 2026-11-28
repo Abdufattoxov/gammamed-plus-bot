@@ -29,3 +29,9 @@ class PaymentReceiptState(StatesGroup):
 class DirectPaymentState(StatesGroup):
     """Instagram Direct / telefon orqali yozilgan bemordan telefon raqam so'rash holati"""
     waiting_for_phone = State()
+
+
+class AdminCardState(StatesGroup):
+    """Admin paneldan to'lov kartasini o'zgartirish holatlari"""
+    waiting_for_card_number = State()
+    waiting_for_card_holder = State()

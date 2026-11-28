@@ -5,7 +5,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-from config import DATABASE_NAME, DATABASE_URL, ADMIN_IDS
+from config import DATABASE_NAME, DATABASE_URL, ADMIN_IDS, PAYMENT_CARD_NUMBER, PAYMENT_CARD_HOLDER
 
 _pg_pool = None
 
@@ -146,6 +146,12 @@ async def init_db():
             ]
             for stmt in appt_migrations_pg:
                 await conn.execute(stmt)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                );
+            """)
     else:
         async with aiosqlite.connect(DATABASE_NAME) as db:
             await db.execute("""
@@ -259,6 +265,12 @@ async def init_db():
                 if col_name not in existing_appt_cols:
                     await db.execute(f"ALTER TABLE appointments ADD COLUMN {col_name} {col_def}")
             await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_appointments_client_number ON appointments(client_number)")
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            """)
             await db.commit()
 
 
@@ -1611,5 +1623,72 @@ async def link_appointment_user_id(appointment_id: int, user_id: int):
             await db.execute(
                 "UPDATE appointments SET user_id = ? WHERE id = ?",
                 (user_id, appointment_id)
+            )
+            await db.commit()
+
+
+# ==========================================
+# SOZLAMALAR: TO'LOV KARTASI (DINAMIK)
+# ==========================================
+async def get_payment_card() -> tuple[str, str]:
+    """
+    Bazadagi settings jadvalidan karta raqami va egasini olish.
+    Agar bazada saqlanmagan bo'lsa, config.py (.env) dagi qiymatni qaytaradi.
+    """
+    card_num = None
+    card_holder = None
+    try:
+        if is_postgres():
+            pool = await get_pg_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT key, value FROM settings WHERE key IN ('payment_card_number', 'payment_card_holder');"
+                )
+                for r in rows:
+                    if r["key"] == "payment_card_number" and r["value"]:
+                        card_num = r["value"]
+                    elif r["key"] == "payment_card_holder" and r["value"]:
+                        card_holder = r["value"]
+        else:
+            async with aiosqlite.connect(DATABASE_NAME) as db:
+                async with db.execute(
+                    "SELECT key, value FROM settings WHERE key IN ('payment_card_number', 'payment_card_holder')"
+                ) as cursor:
+                    for k, v in await cursor.fetchall():
+                        if k == "payment_card_number" and v:
+                            card_num = v
+                        elif k == "payment_card_holder" and v:
+                            card_holder = v
+    except Exception:
+        pass
+
+    return (
+        card_num or PAYMENT_CARD_NUMBER,
+        card_holder or PAYMENT_CARD_HOLDER
+    )
+
+
+async def set_payment_card(card_number: str, card_holder: str):
+    """Yangi karta raqami va egasini settings jadvaliga saqlash"""
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO settings (key, value) VALUES ('payment_card_number', $1)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+            """, card_number)
+            await conn.execute("""
+                INSERT INTO settings (key, value) VALUES ('payment_card_holder', $1)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+            """, card_holder)
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('payment_card_number', ?)",
+                (card_number,)
+            )
+            await db.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('payment_card_holder', ?)",
+                (card_holder,)
             )
             await db.commit()

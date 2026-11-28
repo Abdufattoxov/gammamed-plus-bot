@@ -41,6 +41,7 @@ from states import (
     AppointmentState,
     AdminBroadcastState,
     AdminManageState,
+    AdminCardState,
     PaymentReceiptState,
     DirectPaymentState
 )
@@ -333,12 +334,13 @@ async def _send_direct_payment_instructions(message: Message, state: FSMContext,
     await state.update_data(receipt_app_id=app_id)
 
     patient_name = app.get("patient_name") or "Hurmatli bemor"
+    card_number, card_holder = await database.get_payment_card()
     payment_text = (
         f"💳 <b>Oldindan to‘lov (Joyni band qilish)</b>\n\n"
         f"👤 <b>Bemor:</b> {patient_name}\n"
         f"Joyingizni boshqa bemorga berib yubormasligimiz uchun oldindan to‘lovni quyidagi kartaga o‘tkazing:\n\n"
-        f"💳 <b>Karta raqami:</b> <code>{PAYMENT_CARD_NUMBER}</code>\n"
-        f"👤 <b>Karta egasi:</b> {PAYMENT_CARD_HOLDER}\n"
+        f"💳 <b>Karta raqami:</b> <code>{card_number}</code>\n"
+        f"👤 <b>Karta egasi:</b> {card_holder}\n"
         f"💰 <b>Oldindan to‘lov (aniq summa):</b> <b>{_fmt_money(prepay)} so‘m</b> <i>(iltimos, aynan shu summani o‘tkazing)</i>\n"
         f"🏥 <b>Klinikada to‘lanadigan qoldiq:</b> <b>{_fmt_money(remaining)} so‘m</b>\n\n"
         f"👇 To‘lov qilgach, pastdagi tugmani bosib chek rasmini yuboring!"
@@ -1080,10 +1082,11 @@ async def process_admin_lead_decision(callback: CallbackQuery, bot: Bot):
             return
 
         # Mijozga avtomatik karta va unikal summa xabarini yuborish
+        card_number, card_holder = await database.get_payment_card()
         client_msg = (
             f"✅ <b>Qabulga yozilish tasdiqlandi!</b>\n\n"
             f"Joyingizni boshqa bemorga berib yubormasligimiz uchun oldindan to‘lovni quyidagi kartaga o‘tkazing:\n"
-            f"💳 <b>Karta raqami:</b> <code>{PAYMENT_CARD_NUMBER}</code> ({PAYMENT_CARD_HOLDER})\n"
+            f"💳 <b>Karta raqami:</b> <code>{card_number}</code> ({card_holder})\n"
             f"💰 <b>Oldindan to‘lov (aniq summa):</b> <b>{_fmt_money(prepay)} so‘m</b> <i>(iltimos, aynan shu summani o‘tkazing)</i>\n"
             f"🏥 <b>Klinikada to‘lanadigan qoldiq:</b> <b>{_fmt_money(remaining)} so‘m</b>\n\n"
             f"👇 To‘lov qilgach, pastdagi tugmani bosib chek rasmini yuboring!"
@@ -2028,3 +2031,92 @@ async def db_clean_do_one(callback: CallbackQuery):
     else:
         await callback.answer("Ariza topilmadi.", show_alert=False)
     await db_clean_menu_callback(callback)
+
+
+# ==========================================
+# 11. ADMIN: TO'LOV KARTASINI SOZLASH (DINAMIK)
+# ==========================================
+@router.callback_query(F.data == "admin_card_settings")
+async def admin_card_settings_start(callback: CallbackQuery, state: FSMContext):
+    """Admin paneldan to'lov kartasi raqami va egasini o'zgartirish"""
+    user_id = callback.from_user.id if callback.from_user else 0
+    perms = await database.get_admin_permissions(user_id)
+    if not perms or not (perms.get("is_super") or perms.get("can_manage_admins")):
+        return
+
+    card_number, card_holder = await database.get_payment_card()
+    await state.set_state(AdminCardState.waiting_for_card_number)
+    await callback.answer()
+    await callback.message.answer(
+        f"💳 <b>To‘lov kartasi sozlamalari</b>\n\n"
+        f"🔹 <b>Hozirgi karta raqami:</b> <code>{card_number}</code>\n"
+        f"🔹 <b>Hozirgi karta egasi:</b> {card_holder}\n\n"
+        f"✍️ Yangi karta raqamini kiriting <i>(Masalan: <code>8600 1234 5678 9010</code>)</i>:",
+        reply_markup=get_cancel_reply_kb()
+    )
+
+
+@router.message(AdminCardState.waiting_for_card_number, F.text)
+async def admin_card_receive_number(message: Message, state: FSMContext):
+    """Yangi karta raqamini tekshirish va karta egasini so'rash"""
+    user_id = message.from_user.id if message.from_user else 0
+    perms = await database.get_admin_permissions(user_id)
+    if not perms or not (perms.get("is_super") or perms.get("can_manage_admins")):
+        await state.clear()
+        return
+
+    if is_menu_navigation(message.text) and "Bekor qilish" in message.text:
+        await state.clear()
+        await message.answer("Karta sozlamalari bekor qilindi.", reply_markup=get_main_menu_kb())
+        return
+
+    digits = re.sub(r"\D", "", message.text)
+    if len(digits) < 16:
+        await message.answer(
+            "❌ Karta raqami kamida <b>16 ta raqamdan</b> iborat bo‘lishi kerak. Qaytadan kiriting:",
+            reply_markup=get_cancel_reply_kb()
+        )
+        return
+
+    # 16 xonali raqamni chiroyli 4 tadan guruhlab formatlash (8600 1234 5678 9010)
+    formatted_card = " ".join(digits[i:i + 4] for i in range(0, len(digits), 4))
+    await state.update_data(new_card_number=formatted_card)
+    await state.set_state(AdminCardState.waiting_for_card_holder)
+    await message.answer(
+        f"✅ Karta raqami: <code>{formatted_card}</code>\n\n"
+        f"👤 Endi karta egasining ism-familiyasini kiriting <i>(Masalan: <code>ZARIFA RUSTAMOVA</code>)</i>:",
+        reply_markup=get_cancel_reply_kb()
+    )
+
+
+@router.message(AdminCardState.waiting_for_card_holder, F.text)
+async def admin_card_receive_holder(message: Message, state: FSMContext):
+    """Karta egasining ism-familiyasini qabul qilib bazaga saqlash"""
+    user_id = message.from_user.id if message.from_user else 0
+    perms = await database.get_admin_permissions(user_id)
+    if not perms or not (perms.get("is_super") or perms.get("can_manage_admins")):
+        await state.clear()
+        return
+
+    if is_menu_navigation(message.text) and "Bekor qilish" in message.text:
+        await state.clear()
+        await message.answer("Karta sozlamalari bekor qilindi.", reply_markup=get_main_menu_kb())
+        return
+
+    card_holder = message.text.strip()
+    if len(card_holder) < 3:
+        await message.answer("Iltimos, karta egasining ism-familiyasini to‘liq kiriting:", reply_markup=get_cancel_reply_kb())
+        return
+
+    data = await state.get_data()
+    card_number = data.get("new_card_number", "")
+    await state.clear()
+
+    await database.set_payment_card(card_number, card_holder)
+    await message.answer(
+        f"✅ <b>To‘lov kartasi muvaffaqiyatli yangilandi!</b>\n\n"
+        f"💳 <b>Karta raqami:</b> <code>{card_number}</code>\n"
+        f"👤 <b>Karta egasi:</b> {card_holder}\n\n"
+        f"Endi barcha bemorlarga ushbu karta ko‘rinadi.",
+        reply_markup=get_main_menu_kb()
+    )
