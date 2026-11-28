@@ -998,14 +998,14 @@ async def admin_meta_ads_callback(callback: CallbackQuery):
             total_starts=total_starts
         )
         await loading_msg.edit_text(text=report_text, reply_markup=get_admin_panel_kb())
-    except meta_ads.MetaAuthError:
+    except meta_ads.MetaAuthError as e:
         await loading_msg.edit_text(
-            "❌ Meta API tokeni ulanmagan yoki muddati tugagan. Server/Render sozlamalarida META_ACCESS_TOKEN ni tekshiring.",
+            f"❌ Meta API tokeni ulanmagan yoki muddati tugagan. Server/Render sozlamalarida META_ACCESS_TOKEN ni tekshiring.\n\n<i>Sabab: {str(e)[:200]}</i>",
             reply_markup=get_admin_panel_kb()
         )
     except Exception as e:
         await loading_msg.edit_text(
-            f"❌ Meta Ads ma'lumotlarini yuklashda xatolik yuz berdi: {str(e)}",
+            f"❌ Meta Ads ma'lumotlarini yuklashda xatolik yuz berdi: {str(e)[:250]}",
             reply_markup=get_admin_panel_kb()
         )
 

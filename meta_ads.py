@@ -55,23 +55,44 @@ def _parse_insight_row(row: dict | None) -> dict:
     }
 
 
-async def _fetch_insights(session: aiohttp.ClientSession, url: str, params: dict) -> list[dict]:
-    """Meta Graph API insights so'rovini yuborish va xatolarni ushlash"""
+def _format_ad_status(status: str | None) -> str:
+    """Reklama holatini o'zbekcha tushunarli belgiga aylantirish"""
+    if not status:
+        return "⚪ Holati noma'lum"
+    s = status.upper()
+    mapping = {
+        "ACTIVE": "🟢 Faol (ACTIVE)",
+        "PAUSED": "⏸ To‘xtatilgan (PAUSED)",
+        "CAMPAIGN_PAUSED": "⏸ Kampaniya to‘xtatilgan (PAUSED)",
+        "ADSET_PAUSED": "⏸ Adset to‘xtatilgan (PAUSED)",
+        "IN_PROCESS": "⏳ Tekshiruvda (IN_PROCESS)",
+        "WITH_ISSUES": "🔴 Muammoli (WITH_ISSUES)",
+        "PENDING_REVIEW": "⏳ Moderatsiyada",
+        "DISAPPROVED": "❌ Rad etilgan",
+        "ARCHIVED": "🗄 Arxivlangan",
+        "DELETED": "🗑 O‘chirilgan",
+    }
+    return mapping.get(s, f"ℹ️ {s}")
+
+
+async def _fetch_graph_data(session: aiohttp.ClientSession, url: str, params: dict) -> list[dict]:
+    """Meta Graph API so'rovini yuborish va aniq xatolarni ushlash"""
     async with session.get(url, params=params, timeout=20) as resp:
         payload = await resp.json()
         if resp.status != 200 or "error" in payload:
             err = payload.get("error", {})
             code = err.get("code")
+            msg = err.get("message", f"Meta API HTTP {resp.status}")
             if resp.status in (401, 403) or code in (190, 102, 10):
-                raise MetaAuthError(err.get("message", "Invalid or expired Meta token"))
-            raise RuntimeError(err.get("message", f"Meta API HTTP {resp.status}"))
+                raise MetaAuthError(msg)
+            raise RuntimeError(msg)
         return payload.get("data", [])
 
 
 async def get_meta_ads_report(total_appointments: int, total_starts: int) -> str:
     """
-    Meta Graph API v21.0 orqali umumiy, bugungi va har bir video reklama bo'yicha
-    natijalarni olib, sodda o'zbek tilida hisobot tayyorlash.
+    Meta Graph API v21.0 orqali umumiy, bugungi, har bir video reklama bo'yicha
+    natijalar va holatlarni olib, sodda o'zbek tilida hisobot tayyorlash.
     """
     token = os.getenv("META_ACCESS_TOKEN", META_ACCESS_TOKEN)
     account_id = os.getenv("META_AD_ACCOUNT_ID", META_AD_ACCOUNT_ID)
@@ -80,36 +101,49 @@ async def get_meta_ads_report(total_appointments: int, total_starts: int) -> str
     if not token:
         raise MetaAuthError("META_ACCESS_TOKEN kiritilmagan")
 
-    base_url = f"https://graph.facebook.com/v21.0/act_{account_id}/insights"
+    insights_url = f"https://graph.facebook.com/v21.0/act_{account_id}/insights"
+    ads_status_url = f"https://graph.facebook.com/v21.0/act_{account_id}/ads"
     fields_base = "spend,impressions,reach,clicks,actions,cpc,ctr"
     fields_ad = "ad_name,spend,impressions,reach,clicks,actions,cpc,ctr"
 
     async with aiohttp.ClientSession() as session:
-        overall_data, today_data, ads_data = await asyncio.gather(
-            _fetch_insights(session, base_url, {
+        overall_data, today_data, ads_data, ads_meta = await asyncio.gather(
+            _fetch_graph_data(session, insights_url, {
                 "access_token": token,
                 "date_preset": "maximum",
                 "fields": fields_base,
             }),
-            _fetch_insights(session, base_url, {
+            _fetch_graph_data(session, insights_url, {
                 "access_token": token,
                 "date_preset": "today",
                 "fields": fields_base,
             }),
-            _fetch_insights(session, base_url, {
+            _fetch_graph_data(session, insights_url, {
                 "access_token": token,
                 "level": "ad",
                 "date_preset": "maximum",
                 "fields": fields_ad,
+            }),
+            _fetch_graph_data(session, ads_status_url, {
+                "access_token": token,
+                "fields": "name,effective_status",
+                "limit": 50,
             }),
         )
 
     overall = _parse_insight_row(overall_data[0] if overall_data else None)
     today = _parse_insight_row(today_data[0] if today_data else None)
 
+    status_map = {item.get("name", ""): item.get("effective_status") for item in ads_meta}
     ads_parsed = [_parse_insight_row(r) for r in ads_data]
-    video_1 = next((a for a in ads_parsed if "Video_1_DrZarifa_Ozi" in a["ad_name"]), _parse_insight_row(None))
-    video_2 = next((a for a in ads_parsed if "Video_2_Bulungur_Diktor" in a["ad_name"]), _parse_insight_row(None))
+
+    def get_ad_info(keyword: str) -> tuple[dict, str]:
+        row = next((a for a in ads_parsed if keyword in a["ad_name"]), _parse_insight_row(None))
+        raw_status = next((st for name, st in status_map.items() if keyword in name), None)
+        return row, _format_ad_status(raw_status)
+
+    video_1, video_1_status = get_ad_info("Video_1_DrZarifa_Ozi")
+    video_2, video_2_status = get_ad_info("Video_2_Bulungur_Diktor")
 
     def fmt_int(val: int) -> str:
         return f"{val:,}".replace(",", " ")
@@ -151,8 +185,10 @@ async def get_meta_ads_report(total_appointments: int, total_starts: int) -> str
         f"• Reklama qiziqish darajasi (CTR): <b>{overall['ctr']:.2f}%</b>\n\n"
         f"🎬 <b>VIDEOLAR BO‘YICHA SOLISHTIRUV:</b>\n"
         f"1️⃣ <b>Dr. Zarifa o‘zi gapirgan video (<code>Video_1_DrZarifa_Ozi</code>):</b>\n"
+        f"   • Holati: {video_1_status}\n"
         f"   • Sarflandi: <b>${video_1['spend']:.2f}</b> | Ko‘rish: <b>{fmt_int(video_1['reach'])}</b> | Klik: <b>{fmt_int(video_1['link_clicks'])} ta</b> | 1 klik: <b>${video_1['cpc']:.2f}</b>\n"
         f"2️⃣ <b>Diktorli video (<code>Video_2_Bulungur_Diktor</code>):</b>\n"
+        f"   • Holati: {video_2_status}\n"
         f"   • Sarflandi: <b>${video_2['spend']:.2f}</b> | Ko‘rish: <b>{fmt_int(video_2['reach'])}</b> | Klik: <b>{fmt_int(video_2['link_clicks'])} ta</b> | 1 klik: <b>${video_2['cpc']:.2f}</b>\n\n"
         f"📥 <b>BOT VA MIJOZLAR KONVERSIYASI:</b>\n"
         f"• Tugma bosganlar (Meta): <b>{fmt_int(meta_clicks)} ta</b>\n"
