@@ -34,7 +34,7 @@ def get_main_menu_kb() -> ReplyKeyboardMarkup:
         ],
         [
             KeyboardButton(text="📍 Manzil va ish vaqti"),
-            KeyboardButton(text="❓ Anonim savol berish")
+            KeyboardButton(text="💬 Shifokorga savol berish")
         ]
     ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
@@ -285,10 +285,19 @@ def get_admin_appointment_kb(appointment_id: int, current_status: str = "Kutilmo
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def get_admin_panel_kb() -> InlineKeyboardMarkup:
-    """Admin panel boshqaruv tugmalari"""
+def get_admin_panel_kb(perms: dict | None = None) -> InlineKeyboardMarkup:
+    """Admin panel boshqaruv tugmalari (har bir admin uchun faqat ruxsat etilgan tugmalar)"""
+    if perms is None:
+        perms = {
+            "is_super": True,
+            "can_manage_appointments": True,
+            "can_reply_questions": True,
+            "can_view_stats": True,
+            "can_broadcast": True,
+            "can_manage_admins": True,
+        }
+
     sheet_url = os.getenv("GOOGLE_SHEET_URL", GOOGLE_SHEET_URL)
-    
     if sheet_url and sheet_url.startswith("http"):
         sheet_button = InlineKeyboardButton(
             text="📊 Baza (Google Sheets)",
@@ -300,34 +309,121 @@ def get_admin_panel_kb() -> InlineKeyboardMarkup:
             callback_data="admin_google_sheets"
         )
 
+    buttons = []
+
+    row1 = []
+    if perms.get("can_view_stats"):
+        row1.append(InlineKeyboardButton(text="📊 Statistika / Voronka", callback_data="admin_stats"))
+    if perms.get("can_manage_appointments") or perms.get("can_view_stats"):
+        row1.append(sheet_button)
+    if row1:
+        buttons.append(row1)
+
+    if perms.get("can_view_stats"):
+        buttons.append([
+            InlineKeyboardButton(text="📈 Target natijalari", callback_data="admin_meta_ads")
+        ])
+
+    if perms.get("can_broadcast"):
+        buttons.append([
+            InlineKeyboardButton(text="📢 Barchaga xabar yuborish (Broadcast)", callback_data="admin_broadcast")
+        ])
+
+    if perms.get("is_super") or perms.get("can_manage_admins"):
+        buttons.append([
+            InlineKeyboardButton(text="👥 Adminlar boshqaruvi", callback_data="adm_mgr:menu")
+        ])
+
+    buttons.append([
+        InlineKeyboardButton(text="❌ Yopish", callback_data="admin_close")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_admin_manage_kb() -> InlineKeyboardMarkup:
+    """Adminlar boshqaruvi menyusi"""
     buttons = [
         [
-            InlineKeyboardButton(
-                text="📊 Statistika / Voronka",
-                callback_data="admin_stats"
-            ),
-            sheet_button
+            InlineKeyboardButton(text="➕ Admin qo‘shish", callback_data="adm_mgr:add"),
+            InlineKeyboardButton(text="📋 Adminlar ro‘yxati", callback_data="adm_mgr:list")
         ],
         [
-            InlineKeyboardButton(
-                text="📈 Target natijalari",
-                callback_data="admin_meta_ads"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="📢 Barchaga xabar yuborish (Broadcast)",
-                callback_data="admin_broadcast"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="❌ Yopish",
-                callback_data="admin_close"
-            )
+            InlineKeyboardButton(text="⬅️ Admin panelga qaytish", callback_data="adm_mgr:back")
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_admin_perm_toggle_kb(perms: dict) -> InlineKeyboardMarkup:
+    """Yangi admin huquqlarini belgilash tugmalari"""
+    def icon(key: str) -> str:
+        return "✅" if perms.get(key) else "❌"
+
+    buttons = [
+        [
+            InlineKeyboardButton(
+                text=f"{icon('can_manage_appointments')} Arizalar",
+                callback_data="adm_perm:can_manage_appointments"
+            ),
+            InlineKeyboardButton(
+                text=f"{icon('can_reply_questions')} Savollar",
+                callback_data="adm_perm:can_reply_questions"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text=f"{icon('can_view_stats')} Statistika/Target",
+                callback_data="adm_perm:can_view_stats"
+            ),
+            InlineKeyboardButton(
+                text=f"{icon('can_broadcast')} Xabar tarqatish",
+                callback_data="adm_perm:can_broadcast"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text=f"{icon('can_manage_admins')} Adminlar boshqaruvi",
+                callback_data="adm_perm:can_manage_admins"
+            )
+        ],
+        [
+            InlineKeyboardButton(text="💾 Saqlash", callback_data="adm_perm:save"),
+            InlineKeyboardButton(text="❌ Bekor qilish", callback_data="adm_perm:cancel")
+        ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_admin_list_kb(admins_list: list[dict], super_admin_ids: list[int]) -> InlineKeyboardMarkup:
+    """Qo'shilgan adminlarni o'chirish tugmalari (Super Adminlar uchun o'chirish tugmasi chiqmaydi)"""
+    buttons = []
+    for adm in admins_list:
+        uid = adm["user_id"]
+        if uid in super_admin_ids:
+            continue
+        name = adm.get("full_name") or str(uid)
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"🗑 O‘chirish: {name} ({uid})",
+                callback_data=f"adm_del:{uid}"
+            )
+        ])
+    buttons.append([
+        InlineKeyboardButton(text="⬅️ Orqaga", callback_data="adm_mgr:menu")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_question_reply_kb(question_id: int) -> InlineKeyboardMarkup:
+    """Savolga javob yozish tugmasi"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="✍️ Javob yozish",
+                callback_data=f"reply_q:{question_id}"
+            )
+        ]
+    ])
 
 
 def get_services_info_inline_kb(button_text: str = "📅 Hozir qabulga yozilish") -> InlineKeyboardMarkup:

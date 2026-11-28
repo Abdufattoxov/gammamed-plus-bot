@@ -9,7 +9,9 @@ from aiogram.types import (
     Message,
     CallbackQuery,
     ReplyKeyboardRemove,
-    FSInputFile
+    FSInputFile,
+    BotCommand,
+    BotCommandScopeChat
 )
 
 from config import (
@@ -30,7 +32,13 @@ from config import (
 import database
 import google_sheets
 import meta_ads
-from states import AppointmentState, AnonymousQuestionState, AdminBroadcastState
+from states import (
+    AppointmentState,
+    AnonymousQuestionState,
+    QuestionReplyState,
+    AdminBroadcastState,
+    AdminManageState
+)
 from keyboards import (
     get_main_menu_kb,
     get_back_cancel_reply_kb,
@@ -41,6 +49,10 @@ from keyboards import (
     get_time_slots_inline_kb,
     get_admin_appointment_kb,
     get_admin_panel_kb,
+    get_admin_manage_kb,
+    get_admin_perm_toggle_kb,
+    get_admin_list_kb,
+    get_question_reply_kb,
     get_services_info_inline_kb
 )
 
@@ -104,6 +116,7 @@ def is_menu_navigation(text: str | None) -> bool:
         "Xizmatlar va narxlar",
         "Shifokor haqida",
         "Manzil va ish vaqti",
+        "Shifokorga savol",
         "Anonim savol",
         "Bekor qilish"
     ]
@@ -165,20 +178,29 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext)
 
     # 2. Standart /start
     greeting_name = user.first_name if user else "muhtaram bemor"
+    cta_block = (
+        f"👇 <b>Dr. Zarifa qabuliga yozilish uchun pastdagi «📅 Qabulga yozilish» tugmasini bosing!</b>\n"
+        f"<i>(Agar avval qabul narxi va ichiga kiruvchi 4 ta xizmat bilan tanishmoqchi bo‘lsangiz, «💰 Qabul narxi» tugmasini bosing.)</i>"
+    )
     welcome_text = (
         f"Assalomu alaykum va rahmatulloh, hurmatli <b>{greeting_name}</b>! 🌸\n\n"
+        f"{cta_block}\n\n"
         f"<b>«{CLINIC_NAME}»</b> ({CLINIC_NAME_COMMON}) — {DOCTOR_TITLE} <b>{DOCTOR_NAME}</b>ning "
         f"rasmiy telegram botiga xush kelibsiz.\n\n"
         f"🩺 <b>Asosiy ixtisoslashuv yo‘nalishlarimiz:</b>\n"
         f"• Bepushtlik (farzand ko‘ra olmaslik, analizlar toza bo‘lsa ham homila bo‘lmasligi)\n"
         f"• Hayz oldi va hayz davridagi kuchli og‘riqlar\n"
         f"• Gormonal va psixosomatik muammolar\n\n"
-        f"Quyidagi menyu orqali qabulga yozilishingiz yoki xizmatlarimiz bilan tanishishingiz mumkin:"
+        f"{cta_block}"
     )
 
     await message.answer(
-        text=welcome_text,
+        text="🌸 <b>Asosiy menyu faollashtirildi:</b>",
         reply_markup=get_main_menu_kb()
+    )
+    await message.answer(
+        text=welcome_text,
+        reply_markup=get_services_info_inline_kb("📅 Hoziroq qabulga yozilish")
     )
 
 
@@ -225,7 +247,7 @@ async def price_info_handler(message: Message, state: FSMContext):
         f"1️⃣ <b>Er-xotin birgalikdagi chuqur suhbat va ko‘rik</b> — bitta narxning o‘zida turmush o‘rtog‘ingiz bilan birga kirasiz;\n"
         f"2️⃣ <b>Eski analiz va UTT qog‘ozlarining to‘liq auditi</b> — Dr. Zarifa (30 yil tajriba) barcha qog‘ozlaringizni ko‘rib, keraksiz dorilar va ortiqcha xarajatlardan himoya qiladi;\n"
         f"3️⃣ <b>To‘liq tuzalishga qaratilgan shaxsiy mashqlar kompleksi</b> — og‘riq va bachadon spazmini dorisiz yechuvchi maxsus mashqlar qo‘lingizga yozib va tushuntirib beriladi;\n"
-        f"4️⃣ <b>24 soatlik individual kun tartibi xaritasi</b> — uyg‘onishdan uyqugacha bo‘lgan soatma-soat tiklanish rejasi shifokor dastxati bilan yozib beriladi.\n\n"
+        f"4️⃣ <b>24 soatlik individual kun tartibi xaritasi</b> — uyg‘onishdan uyqugacha bo‘lgan soatma-soat tiklanish rejasi aniq yozib va tushuntirib beriladi.\n\n"
         f"⚠️ Haftalik qabul o‘rinlari cheklangan. Qabulga yozilish uchun pastdagi tugmani bosing 👇"
     )
     await message.answer(
@@ -328,21 +350,21 @@ async def contact_fallback_handler(message: Message, state: FSMContext):
 
 
 # ==========================================
-# 5. ANONIM SAVOL BERISH OQIMI
+# 5. SHIFOKORGA SAVOL BERISH VA JAVOB QAYTARISH
 # ==========================================
-@router.message(F.text.func(lambda t: t and ("Anonim savol" in t)), StateFilter("*"))
+@router.message(F.text.func(lambda t: t and ("Shifokorga savol" in t or "Anonim savol" in t)), StateFilter("*"))
 async def anon_question_start(message: Message, state: FSMContext):
-    """Anonim savol berishni boshlash"""
+    """Shifokorga savol berishni boshlash"""
     await state.clear()
     await track_event(message, "menu_anon_question")
     await state.set_state(AnonymousQuestionState.waiting_for_question)
     text = (
-        f"❓ <b>Shifokorga anonim savol yo‘llash</b>\n\n"
+        f"💬 <b>Shifokorga savol yo‘llash</b>\n\n"
         f"Siz ayollar salomatligi yoki psixosomatika bo‘yicha o‘zingizni o‘ylantirayotgan "
-        f"nozik savolingizni bevosita <b>{DOCTOR_NAME}</b>ga yuborishingiz mumkin.\n\n"
+        f"savolingizni bevosita <b>{DOCTOR_NAME}</b>ga yuborishingiz mumkin.\n\n"
         f"🔒 <b>Maxfiylik kafolati:</b>\n"
-        f"Savolingiz shifokorga shaxsiy ma'lumotlaringiz "
-        f"<b>mutlaqo ko‘rsatilmagan holda</b>, butunlay anonim tarzda yetkaziladi.\n\n"
+        f"Savolingiz begonalarga ko‘rinmaydi, faqat shifokor va ma’muriyatga yetib boradi. "
+        f"Javob to‘g‘ridan-to‘g‘ri sizning shu botingizga yuboriladi.\n\n"
         f"{SAFETY_NOTICE}\n\n"
         f"✍️ <i>Savolingizni bitta xabarda batafsil yozib yuboring:</i>"
     )
@@ -354,7 +376,7 @@ async def anon_question_start(message: Message, state: FSMContext):
 
 @router.message(AnonymousQuestionState.waiting_for_question, F.text)
 async def anon_question_receive(message: Message, state: FSMContext, bot: Bot):
-    """Anonim savolni qabul qilish va adminga yuborish"""
+    """Savolni qabul qilish, bazaga saqlash va javob huquqiga ega adminlarga yuborish"""
     if is_menu_navigation(message.text):
         await state.clear()
         if "Bekor qilish" in message.text:
@@ -369,14 +391,23 @@ async def anon_question_receive(message: Message, state: FSMContext, bot: Bot):
         )
         return
 
-    user_id = message.from_user.id if message.from_user else 0
-    question_id = await database.save_anonymous_question(user_id, question_text)
+    user = message.from_user
+    user_id = user.id if user else 0
+    username = user.username if user and user.username else ""
+    full_name = user.full_name if user else "Noma'lum"
+
+    question_id = await database.save_anonymous_question(
+        user_id=user_id,
+        question_text=question_text,
+        username=username,
+        full_name=full_name
+    )
     await state.clear()
 
     reply_text = (
         f"🕊 <b>Savolingiz muvaffaqiyatli qabul qilindi!</b>\n\n"
-        f"Savolingiz #{question_id} raqami bilan anonim tarzda shifokorga yetkazildi. "
-        f"Dr. Zarifa bo‘sh vaqt topishi bilan savollarga umumiy maslahat tayyorlaydi.\n\n"
+        f"Savolingiz <b>#Q-{question_id}</b> raqami bilan shifokor va ma’muriyatga yetkazildi. "
+        f"Javob tayyor bo‘lishi bilan shu bot orqali sizga yuboriladi.\n\n"
         f"Salomatligingizga befarq bo‘lmaganingiz uchun tashakkur!"
     )
     await message.answer(
@@ -384,25 +415,147 @@ async def anon_question_receive(message: Message, state: FSMContext, bot: Bot):
         reply_markup=get_main_menu_kb()
     )
 
+    username_display = f"@{username}" if username else "mavjud emas"
     notify_text = (
-        f"❓ <b>YANGI ANONIM SAVOL (#{question_id})</b>\n\n"
-        f"📝 <b>Savol matni:</b>\n"
-        f"<i>«{question_text}»</i>\n\n"
+        f"💬 <b>YANGI SAVOL (#Q-{question_id})</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 <b>Ismi:</b> <a href='tg://user?id={user_id}'>{full_name}</a>\n"
+        f"🔗 <b>Username:</b> {username_display}\n"
+        f"🆔 <b>Telegram ID:</b> <code>{user_id}</code>\n"
         f"⏰ <b>Vaqti:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
-        f"🔒 <i>Yuboruvchi shaxsi anonim saqlangan.</i>"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"📝 <b>Savol matni:</b>\n"
+        f"<i>«{question_text}»</i>"
     )
 
-    for admin_id in ADMIN_IDS:
+    target_admins = await database.get_admins_with_permission("can_reply_questions")
+    for admin_id in target_admins:
         try:
-            await bot.send_message(chat_id=admin_id, text=notify_text)
+            sent_msg = await bot.send_message(
+                chat_id=admin_id,
+                text=notify_text,
+                reply_markup=get_question_reply_kb(question_id)
+            )
+            await database.save_admin_question_message(question_id, sent_msg.chat.id, sent_msg.message_id)
         except Exception:
             pass
 
     if ADMIN_GROUP_ID:
         try:
-            await bot.send_message(chat_id=ADMIN_GROUP_ID, text=notify_text)
+            sent_msg = await bot.send_message(
+                chat_id=ADMIN_GROUP_ID,
+                text=notify_text,
+                reply_markup=get_question_reply_kb(question_id)
+            )
+            await database.save_admin_question_message(question_id, sent_msg.chat.id, sent_msg.message_id)
         except Exception:
             pass
+
+
+@router.callback_query(F.data.startswith("reply_q:"))
+async def start_question_reply(callback: CallbackQuery, state: FSMContext):
+    """Admin savolga javob yozish tugmasini bosganda"""
+    user_id = callback.from_user.id if callback.from_user else 0
+    perms = await database.get_admin_permissions(user_id)
+    if not perms or not perms.get("can_reply_questions"):
+        return
+
+    q_id = int(callback.data.split(":", 1)[1])
+    question = await database.get_question_by_id(q_id)
+    if not question:
+        await callback.answer("Savol bazadan topilmadi.", show_alert=True)
+        return
+
+    await state.set_state(QuestionReplyState.waiting_for_reply)
+    await state.update_data(reply_question_id=q_id)
+    await callback.answer()
+    await callback.message.answer(
+        f"✍️ <b>#Q-{q_id} raqamli savolga javob yozing:</b>\n\n"
+        f"<i>Foydalanuvchi: {question.get('full_name') or 'Noma’lum'}</i>\n"
+        f"Javob matnini yuboring (bekor qilish uchun «❌ Bekor qilish» tugmasini bosing):",
+        reply_markup=get_cancel_reply_kb()
+    )
+
+
+@router.message(QuestionReplyState.waiting_for_reply, F.text)
+async def send_question_reply(message: Message, state: FSMContext, bot: Bot):
+    """Admin yozgan javobni to'g'ridan-to'g'ri savol egasiga yuborish va adminlarda xabarni yangilash"""
+    user_id = message.from_user.id if message.from_user else 0
+    perms = await database.get_admin_permissions(user_id)
+    if not perms or not perms.get("can_reply_questions"):
+        await state.clear()
+        return
+
+    if is_menu_navigation(message.text) and "Bekor qilish" in message.text:
+        await state.clear()
+        await message.answer("Javob yozish bekor qilindi.", reply_markup=get_main_menu_kb())
+        return
+
+    data = await state.get_data()
+    q_id = data.get("reply_question_id")
+    await state.clear()
+
+    question = await database.get_question_by_id(q_id)
+    if not question:
+        await message.answer("❌ Savol bazadan topilmadi.", reply_markup=get_main_menu_kb())
+        return
+
+    reply_text = message.text.strip()
+    admin_name = message.from_user.first_name if message.from_user else "Admin"
+
+    # 1. Savol egasiga to'g'ridan-to'g'ri javob yuborish
+    patient_msg = (
+        f"👩‍⚕️ <b>Dr. Zarifa klinikasidan savolingizga javob:</b>\n\n"
+        f"{reply_text}"
+    )
+    try:
+        await bot.send_message(chat_id=question["user_id"], text=patient_msg)
+        sent_ok = True
+    except Exception:
+        sent_ok = False
+
+    # 2. Bazada answered qilib belgilash
+    await database.update_question_answered(q_id, reply_text, admin_name)
+
+    # 3. Barcha adminlardagi savol xabarini yangilash
+    q_username = question.get("username") or ""
+    q_uname_disp = f"@{q_username}" if q_username else "mavjud emas"
+    q_full_name = question.get("full_name") or "Foydalanuvchi"
+    q_uid = question.get("user_id")
+    updated_admin_text = (
+        f"💬 <b>SAVOL (#Q-{q_id})</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 <b>Ismi:</b> <a href='tg://user?id={q_uid}'>{q_full_name}</a>\n"
+        f"🔗 <b>Username:</b> {q_uname_disp}\n"
+        f"🆔 <b>Telegram ID:</b> <code>{q_uid}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"📝 <b>Savol:</b> <i>«{question.get('question_text', '')}»</i>\n\n"
+        f"✅ <b>Ushbu savolga javob berildi ({admin_name} tomonidan):</b>\n"
+        f"<i>{reply_text}</i>"
+    )
+
+    admin_msgs = await database.get_admin_question_messages(q_id)
+    for m in admin_msgs:
+        try:
+            await bot.edit_message_text(
+                chat_id=m["chat_id"],
+                message_id=m["message_id"],
+                text=updated_admin_text,
+                reply_markup=None
+            )
+        except Exception:
+            pass
+
+    if sent_ok:
+        await message.answer(
+            f"✅ #Q-{q_id} raqamli savolga javob foydalanuvchiga muvaffaqiyatli yuborildi!",
+            reply_markup=get_main_menu_kb()
+        )
+    else:
+        await message.answer(
+            f"⚠️ Bazada belgilandi, lekin foydalanuvchi botni bloklaganligi sababli xabar yetib bormadi.",
+            reply_markup=get_main_menu_kb()
+        )
 
 
 # ==========================================
@@ -744,8 +897,9 @@ async def process_time_slot_selection(callback: CallbackQuery, state: FSMContext
         f"📌 <b>Holati:</b> <i>Kutilmoqda</i>"
     )
 
-    # Admin shaxsiy xabariga
-    for admin_id in ADMIN_IDS:
+    # Admin shaxsiy xabariga (ariza ko'rish huquqi bor barcha adminlarga)
+    appointment_admins = await database.get_admins_with_permission("can_manage_appointments")
+    for admin_id in appointment_admins:
         try:
             sent_msg = await bot.send_message(
                 chat_id=admin_id,
@@ -823,7 +977,8 @@ async def send_excel_backup_to_admins(bot: Bot, app_id: int):
 async def process_admin_appointment_action(callback: CallbackQuery, bot: Bot):
     """Admin ariza holatini o'zgartirishi — BARCHA adminlarda bir vaqtda sinxron yangilanadi"""
     user_id = callback.from_user.id if callback.from_user else 0
-    if user_id not in ADMIN_IDS:
+    perms = await database.get_admin_permissions(user_id)
+    if not perms or not perms.get("can_manage_appointments"):
         return
 
     parts = callback.data.split(":")
@@ -890,25 +1045,27 @@ async def process_admin_appointment_action(callback: CallbackQuery, bot: Bot):
 # ==========================================
 @router.message(Command("admin"), StateFilter("*"))
 async def cmd_admin_panel(message: Message, state: FSMContext):
-    """Admin panelni ochish (Faqat ADMIN_IDS uchun)"""
+    """Admin panelni ochish (Super Adminlar va dinamik adminlar uchun ruxsatlariga mos)"""
     user_id = message.from_user.id if message.from_user else 0
-    if user_id not in ADMIN_IDS:
+    perms = await database.get_admin_permissions(user_id)
+    if not perms:
         return
 
     await state.clear()
+    role_badge = "👑 Super Admin" if perms.get("is_super") else "🛡 Admin"
     text = (
-        f"🔐 <b>«{CLINIC_NAME}» Boshqaruv Paneli (Admin)</b>\n\n"
-        f"Xush kelibsiz! Ushbu bo‘lim orqali bot statistikasi va voronka tahlilini ko‘rishingiz, "
-        f"Google Sheets bazasiga o‘tishingiz hamda barcha foydalanuvchilarga xabar tarqatishingiz mumkin:"
+        f"🔐 <b>«{CLINIC_NAME}» Boshqaruv Paneli</b> ({role_badge})\n\n"
+        f"Xush kelibsiz! Sizga biriktirilgan bo‘limlar quyida ko‘rsatilgan:"
     )
-    await message.answer(text=text, reply_markup=get_admin_panel_kb())
+    await message.answer(text=text, reply_markup=get_admin_panel_kb(perms))
 
 
 @router.callback_query(F.data == "admin_stats")
 async def admin_stats_callback(callback: CallbackQuery):
     """Statistika va Voronka (Drop-off) analitikasini ko'rsatish"""
     user_id = callback.from_user.id if callback.from_user else 0
-    if user_id not in ADMIN_IDS:
+    perms = await database.get_admin_permissions(user_id)
+    if not perms or not perms.get("can_view_stats"):
         return
 
     stats = await database.get_appointments_stats()
@@ -963,7 +1120,7 @@ async def admin_stats_callback(callback: CallbackQuery):
         f"• 🩺 Xizmatlarimiz: <b>{menu['menu_services']['total']}</b> ({menu['menu_services']['unique']} kishi)\n"
         f"• 👩‍⚕️ Shifokor haqida: <b>{menu['menu_doctor']['total']}</b> ({menu['menu_doctor']['unique']} kishi)\n"
         f"• 📍 Manzil va ish vaqti: <b>{menu['menu_location']['total']}</b> ({menu['menu_location']['unique']} kishi)\n"
-        f"• ❓ Anonim savol: <b>{menu['menu_anon_question']['total']}</b> ({menu['menu_anon_question']['unique']} kishi)\n\n"
+        f"• 💬 Shifokorga savol: <b>{menu['menu_anon_question']['total']}</b> ({menu['menu_anon_question']['unique']} kishi)\n\n"
         f"📉 <b>Qabulga yozilish voronkasi (noyob foydalanuvchilar):</b>\n"
         + "\n".join(funnel_lines) + "\n\n"
         f"{dropoff_text}\n"
@@ -971,7 +1128,7 @@ async def admin_stats_callback(callback: CallbackQuery):
         f"⏰ <i>Yangilangan vaqt: {datetime.now().strftime('%d.%m.%Y %H:%M')}</i>"
     )
     try:
-        await callback.message.edit_text(text=text, reply_markup=get_admin_panel_kb())
+        await callback.message.edit_text(text=text, reply_markup=get_admin_panel_kb(perms))
     except Exception:
         pass
     await callback.answer()
@@ -981,7 +1138,8 @@ async def admin_stats_callback(callback: CallbackQuery):
 async def admin_meta_ads_callback(callback: CallbackQuery):
     """Meta Ads (Instagram/Facebook Target) natijalarini Graph API orqali olish va ko'rsatish"""
     user_id = callback.from_user.id if callback.from_user else 0
-    if user_id not in ADMIN_IDS:
+    perms = await database.get_admin_permissions(user_id)
+    if not perms or not perms.get("can_view_stats"):
         return
 
     await callback.answer()
@@ -997,16 +1155,16 @@ async def admin_meta_ads_callback(callback: CallbackQuery):
             total_appointments=total_appointments,
             total_starts=total_starts
         )
-        await loading_msg.edit_text(text=report_text, reply_markup=get_admin_panel_kb())
+        await loading_msg.edit_text(text=report_text, reply_markup=get_admin_panel_kb(perms))
     except meta_ads.MetaAuthError as e:
         await loading_msg.edit_text(
             f"❌ Meta API tokeni ulanmagan yoki muddati tugagan. Server/Render sozlamalarida META_ACCESS_TOKEN ni tekshiring.\n\n<i>Sabab: {str(e)[:200]}</i>",
-            reply_markup=get_admin_panel_kb()
+            reply_markup=get_admin_panel_kb(perms)
         )
     except Exception as e:
         await loading_msg.edit_text(
             f"❌ Meta Ads ma'lumotlarini yuklashda xatolik yuz berdi: {str(e)[:250]}",
-            reply_markup=get_admin_panel_kb()
+            reply_markup=get_admin_panel_kb(perms)
         )
 
 
@@ -1014,7 +1172,8 @@ async def admin_meta_ads_callback(callback: CallbackQuery):
 async def admin_google_sheets_callback(callback: CallbackQuery):
     """Google Sheets havolasini taqdim etish yoki sozlash yo'riqnomasini ko'rsatish"""
     user_id = callback.from_user.id if callback.from_user else 0
-    if user_id not in ADMIN_IDS:
+    perms = await database.get_admin_permissions(user_id)
+    if not perms or not (perms.get("can_manage_appointments") or perms.get("can_view_stats")):
         return
 
     sheet_url = os.getenv("GOOGLE_SHEET_URL", GOOGLE_SHEET_URL)
@@ -1040,7 +1199,8 @@ async def admin_google_sheets_callback(callback: CallbackQuery):
 async def admin_export_callback(callback: CallbackQuery):
     """Bemorlar arizalar bazasini Excel fayl shaklida yuborish"""
     user_id = callback.from_user.id if callback.from_user else 0
-    if user_id not in ADMIN_IDS:
+    perms = await database.get_admin_permissions(user_id)
+    if not perms or not (perms.get("can_manage_appointments") or perms.get("can_view_stats")):
         return
 
     await callback.answer("Excel fayl tayyorlanmoqda...", show_alert=False)
@@ -1070,7 +1230,8 @@ async def admin_export_callback(callback: CallbackQuery):
 async def admin_close_callback(callback: CallbackQuery):
     """Admin panelni yopish"""
     user_id = callback.from_user.id if callback.from_user else 0
-    if user_id not in ADMIN_IDS:
+    perms = await database.get_admin_permissions(user_id)
+    if not perms:
         return
     try:
         await callback.message.delete()
@@ -1083,7 +1244,8 @@ async def admin_close_callback(callback: CallbackQuery):
 async def admin_broadcast_start(callback: CallbackQuery, state: FSMContext):
     """Xabar yuborishni boshlash"""
     user_id = callback.from_user.id if callback.from_user else 0
-    if user_id not in ADMIN_IDS:
+    perms = await database.get_admin_permissions(user_id)
+    if not perms or not perms.get("can_broadcast"):
         return
 
     await state.set_state(AdminBroadcastState.waiting_for_message)
@@ -1101,7 +1263,8 @@ async def admin_broadcast_start(callback: CallbackQuery, state: FSMContext):
 async def admin_broadcast_send(message: Message, state: FSMContext, bot: Bot):
     """Xabarni barcha foydalanuvchilarga tarqatish"""
     user_id = message.from_user.id if message.from_user else 0
-    if user_id not in ADMIN_IDS:
+    perms = await database.get_admin_permissions(user_id)
+    if not perms or not perms.get("can_broadcast"):
         return
 
     if is_menu_navigation(message.text) and "Bekor qilish" in message.text:
@@ -1130,3 +1293,274 @@ async def admin_broadcast_send(message: Message, state: FSMContext, bot: Bot):
         f"❌ Yetkazilmadi (bloklangan/o‘chirilgan): {fail_count} ta"
     )
     await message.answer("Siz asosiy menyudasiz:", reply_markup=get_main_menu_kb())
+
+
+# ==========================================
+# 9. DINAMIK ADMINLAR BOSHQARUVI
+# ==========================================
+def _format_perms_summary(adm: dict) -> str:
+    """Admin huquqlarini qisqa chiroyli matnga o'girish"""
+    labels = []
+    if adm.get("can_manage_appointments"):
+        labels.append("Arizalar")
+    if adm.get("can_reply_questions"):
+        labels.append("Savollar")
+    if adm.get("can_view_stats"):
+        labels.append("Statistika/Target")
+    if adm.get("can_broadcast"):
+        labels.append("Broadcast")
+    if adm.get("can_manage_admins"):
+        labels.append("Adminlar boshqaruvi")
+    return ", ".join(labels) if labels else "Huquq berilmagan"
+
+
+@router.callback_query(F.data == "adm_mgr:menu")
+async def admin_manage_menu(callback: CallbackQuery, state: FSMContext):
+    """Adminlar boshqaruvi bo'limi"""
+    user_id = callback.from_user.id if callback.from_user else 0
+    perms = await database.get_admin_permissions(user_id)
+    if not perms or not (perms.get("is_super") or perms.get("can_manage_admins")):
+        return
+
+    await state.clear()
+    text = (
+        f"👥 <b>Adminlar boshqaruvi</b>\n\n"
+        f"Bu bo‘lim orqali yangi admin qo‘shishingiz, ularga alohida huquqlar "
+        f"(ariza ko‘rish, savollarga javob berish, statistika, broadcast) belgilashingiz "
+        f"yoki oddiy adminlarni tizimdan chiqarishingiz mumkin.\n\n"
+        f"<i>Eslatma: Asosiy Super Adminlarni o‘chirib bo‘lmaydi.</i>"
+    )
+    try:
+        await callback.message.edit_text(text=text, reply_markup=get_admin_manage_kb())
+    except Exception:
+        await callback.message.answer(text=text, reply_markup=get_admin_manage_kb())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm_mgr:back")
+async def admin_manage_back(callback: CallbackQuery, state: FSMContext):
+    """Asosiy admin panelga qaytish"""
+    user_id = callback.from_user.id if callback.from_user else 0
+    perms = await database.get_admin_permissions(user_id)
+    if not perms:
+        return
+
+    await state.clear()
+    role_badge = "👑 Super Admin" if perms.get("is_super") else "🛡 Admin"
+    text = (
+        f"🔐 <b>«{CLINIC_NAME}» Boshqaruv Paneli</b> ({role_badge})\n\n"
+        f"Xush kelibsiz! Sizga biriktirilgan bo‘limlar quyida ko‘rsatilgan:"
+    )
+    try:
+        await callback.message.edit_text(text=text, reply_markup=get_admin_panel_kb(perms))
+    except Exception:
+        await callback.message.answer(text=text, reply_markup=get_admin_panel_kb(perms))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm_mgr:add")
+async def admin_manage_add_start(callback: CallbackQuery, state: FSMContext):
+    """Yangi admin qo'shishni boshlash"""
+    user_id = callback.from_user.id if callback.from_user else 0
+    perms = await database.get_admin_permissions(user_id)
+    if not perms or not (perms.get("is_super") or perms.get("can_manage_admins")):
+        return
+
+    await state.set_state(AdminManageState.waiting_for_admin_user)
+    await callback.answer()
+    await callback.message.answer(
+        "➕ <b>Yangi admin qo‘shish:</b>\n\n"
+        "Admin qilmoqchi bo‘lgan foydalanuvchining <b>Telegram ID</b> raqamini yuboring "
+        "yoki uning biror xabarini shu yerga <b>forward (uzatish)</b> qiling:\n\n"
+        "<i>(Eslatma: Yangi admin botga kamida bir marta /start bosgan bo‘lishi kerak)</i>",
+        reply_markup=get_cancel_reply_kb()
+    )
+
+
+@router.message(AdminManageState.waiting_for_admin_user)
+async def admin_manage_receive_user(message: Message, state: FSMContext):
+    """Yangi admin ID sini (yoki forward xabarni) qabul qilish va huquqlarni tanlash"""
+    user_id = message.from_user.id if message.from_user else 0
+    perms = await database.get_admin_permissions(user_id)
+    if not perms or not (perms.get("is_super") or perms.get("can_manage_admins")):
+        await state.clear()
+        return
+
+    if message.text and is_menu_navigation(message.text) and "Bekor qilish" in message.text:
+        await state.clear()
+        await message.answer("Admin qo‘shish bekor qilindi.", reply_markup=get_main_menu_kb())
+        return
+
+    target_id = None
+    target_name = None
+
+    if message.forward_from:
+        target_id = message.forward_from.id
+        target_name = message.forward_from.full_name
+    elif message.text and message.text.strip().isdigit():
+        target_id = int(message.text.strip())
+        target_name = f"Admin {target_id}"
+    else:
+        await message.answer(
+            "❌ Iltimos, faqat raqamlardan iborat Telegram ID yuboring yoki "
+            "foydalanuvchining xabarini shu yerga forward qiling:",
+            reply_markup=get_cancel_reply_kb()
+        )
+        return
+
+    if target_id in ADMIN_IDS:
+        await state.clear()
+        await message.answer(
+            f"👑 <code>{target_id}</code> allaqachon tizimning asosiy <b>Super Admini</b> hisoblanadi!",
+            reply_markup=get_main_menu_kb()
+        )
+        return
+
+    default_perms = {
+        "can_manage_appointments": True,
+        "can_reply_questions": True,
+        "can_view_stats": False,
+        "can_broadcast": False,
+        "can_manage_admins": False,
+    }
+    await state.set_state(AdminManageState.selecting_permissions)
+    await state.update_data(
+        new_admin_id=target_id,
+        new_admin_name=target_name,
+        new_admin_perms=default_perms
+    )
+
+    await message.answer("Huquqlarni belgilang:", reply_markup=get_main_menu_kb())
+    await message.answer(
+        f"🛡 <b>Yangi admin:</b> {target_name} (<code>{target_id}</code>)\n\n"
+        f"Quyidagi tugmalar orqali unga beriladigan huquqlarni belgilang va «💾 Saqlash» tugmasini bosing:",
+        reply_markup=get_admin_perm_toggle_kb(default_perms)
+    )
+
+
+@router.callback_query(F.data.startswith("adm_perm:"), AdminManageState.selecting_permissions)
+async def admin_manage_toggle_perm(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """Yangi admin huquqlarini yoqish/o'chirish va saqlash"""
+    user_id = callback.from_user.id if callback.from_user else 0
+    perms = await database.get_admin_permissions(user_id)
+    if not perms or not (perms.get("is_super") or perms.get("can_manage_admins")):
+        return
+
+    action = callback.data.split(":", 1)[1]
+    data = await state.get_data()
+    new_admin_id = data.get("new_admin_id")
+    new_admin_name = data.get("new_admin_name", f"Admin {new_admin_id}")
+    new_perms = data.get("new_admin_perms", {})
+
+    if action == "cancel":
+        await state.clear()
+        await callback.message.edit_text("❌ Yangi admin qo‘shish bekor qilindi.", reply_markup=get_admin_manage_kb())
+        await callback.answer()
+        return
+
+    if action == "save":
+        await database.upsert_admin(
+            user_id=new_admin_id,
+            full_name=new_admin_name,
+            added_by=user_id,
+            perms=new_perms
+        )
+        await state.clear()
+
+        # Yangi admin menyusida /admin buyrug'i ko'rinishi uchun scope o'rnatamiz
+        try:
+            await bot.set_my_commands(
+                [
+                    BotCommand(command="start", description="Botni qayta ishga tushirish va asosiy menyu"),
+                    BotCommand(command="admin", description="Klinika boshqaruv paneli (faqat ma'murlar uchun)")
+                ],
+                scope=BotCommandScopeChat(chat_id=new_admin_id)
+            )
+        except Exception:
+            pass
+
+        summary = _format_perms_summary(new_perms)
+        await callback.message.edit_text(
+            f"✅ <b>Admin muvaffaqiyatli qo‘shildi!</b>\n\n"
+            f"👤 <b>Admin:</b> {new_admin_name} (<code>{new_admin_id}</code>)\n"
+            f"🔑 <b>Huquqlari:</b> {summary}",
+            reply_markup=get_admin_manage_kb()
+        )
+        await callback.answer("Admin saqlandi!")
+        return
+
+    # Toggle permission flag
+    if action in new_perms:
+        new_perms[action] = not bool(new_perms[action])
+        await state.update_data(new_admin_perms=new_perms)
+        try:
+            await callback.message.edit_reply_markup(reply_markup=get_admin_perm_toggle_kb(new_perms))
+        except Exception:
+            pass
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm_mgr:list")
+async def admin_manage_list(callback: CallbackQuery):
+    """Barcha adminlar ro'yxatini ko'rsatish"""
+    user_id = callback.from_user.id if callback.from_user else 0
+    perms = await database.get_admin_permissions(user_id)
+    if not perms or not (perms.get("is_super") or perms.get("can_manage_admins")):
+        return
+
+    admins_list = await database.get_all_admins()
+
+    lines = ["👑 <b>Asosiy Super Adminlar (o‘chirilmaydi):</b>"]
+    for sid in ADMIN_IDS:
+        lines.append(f"• <code>{sid}</code> — <i>Barcha huquqlar</i>")
+
+    lines.append("\n🛡 <b>Qo‘shilgan adminlar:</b>")
+    non_super = [a for a in admins_list if a["user_id"] not in ADMIN_IDS]
+    if not non_super:
+        lines.append("<i>Hozircha qo‘shimcha adminlar yo‘q.</i>")
+    else:
+        for adm in non_super:
+            lines.append(
+                f"• <b>{adm.get('full_name') or 'Admin'}</b> (<code>{adm['user_id']}</code>)\n"
+                f"  🔑 {_format_perms_summary(adm)}"
+            )
+
+    text = "\n".join(lines)
+    try:
+        await callback.message.edit_text(
+            text=text,
+            reply_markup=get_admin_list_kb(non_super, ADMIN_IDS)
+        )
+    except Exception:
+        pass
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("adm_del:"))
+async def admin_manage_delete(callback: CallbackQuery, bot: Bot):
+    """Qo'shilgan adminni o'chirish (Super Adminlarni o'chirish taqiqlangan)"""
+    user_id = callback.from_user.id if callback.from_user else 0
+    perms = await database.get_admin_permissions(user_id)
+    if not perms or not (perms.get("is_super") or perms.get("can_manage_admins")):
+        return
+
+    target_id = int(callback.data.split(":", 1)[1])
+    if target_id in ADMIN_IDS:
+        await callback.answer("Super Adminni o‘chirish mumkin emas!", show_alert=True)
+        return
+
+    deleted = await database.delete_admin(target_id)
+    if deleted:
+        try:
+            await bot.set_my_commands(
+                [BotCommand(command="start", description="Botni qayta ishga tushirish va asosiy menyu")],
+                scope=BotCommandScopeChat(chat_id=target_id)
+            )
+        except Exception:
+            pass
+        await callback.answer("Admin o‘chirildi!", show_alert=False)
+    else:
+        await callback.answer("Admin topilmadi.", show_alert=False)
+
+    # Ro'yxatni yangilash
+    await admin_manage_list(callback)

@@ -79,7 +79,15 @@ async def set_bot_commands(bot: Bot):
         BotCommand(command="start", description="Botni qayta ishga tushirish va asosiy menyu"),
         BotCommand(command="admin", description="Klinika boshqaruv paneli (faqat ma'murlar uchun)")
     ]
-    for admin_id in ADMIN_IDS:
+    all_admin_ids = set(ADMIN_IDS)
+    try:
+        dynamic_admins = await database.get_all_admins()
+        for adm in dynamic_admins:
+            all_admin_ids.add(int(adm["user_id"]))
+    except Exception:
+        pass
+
+    for admin_id in all_admin_ids:
         try:
             await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=admin_id))
         except Exception as e:

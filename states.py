@@ -11,10 +11,21 @@ class AppointmentState(StatesGroup):
 
 
 class AnonymousQuestionState(StatesGroup):
-    """Shifokorga anonim savol berish bosqichi"""
+    """Shifokorga savol berish bosqichi"""
     waiting_for_question = State()
+
+
+class QuestionReplyState(StatesGroup):
+    """Admin tomonidan foydalanuvchi savoliga javob yozish bosqichi"""
+    waiting_for_reply = State()
 
 
 class AdminBroadcastState(StatesGroup):
     """Barcha foydalanuvchilarga xabar yuborish (Admin)"""
     waiting_for_message = State()
+
+
+class AdminManageState(StatesGroup):
+    """Yangi admin qo'shish va huquqlarni belgilash bosqichlari"""
+    waiting_for_admin_user = State()
+    selecting_permissions = State()

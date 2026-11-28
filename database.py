@@ -5,7 +5,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-from config import DATABASE_NAME, DATABASE_URL
+from config import DATABASE_NAME, DATABASE_URL, ADMIN_IDS
 
 _pg_pool = None
 
@@ -87,6 +87,31 @@ async def init_db():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS admins (
+                    user_id BIGINT PRIMARY KEY,
+                    full_name TEXT,
+                    added_by BIGINT,
+                    can_manage_appointments BOOLEAN DEFAULT FALSE,
+                    can_reply_questions BOOLEAN DEFAULT FALSE,
+                    can_view_stats BOOLEAN DEFAULT FALSE,
+                    can_broadcast BOOLEAN DEFAULT FALSE,
+                    can_manage_admins BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS question_admin_messages (
+                    id SERIAL PRIMARY KEY,
+                    question_id INTEGER,
+                    chat_id BIGINT,
+                    message_id BIGINT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            # Mavjud questions jadvalini eski ma'lumotlarga zarar yetkazmasdan kengaytirish
+            for col_name in ("username", "full_name", "answer_text", "answered_by"):
+                await conn.execute(f"ALTER TABLE questions ADD COLUMN IF NOT EXISTS {col_name} TEXT;")
     else:
         async with aiosqlite.connect(DATABASE_NAME) as db:
             await db.execute("""
@@ -139,6 +164,34 @@ async def init_db():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS admins (
+                    user_id INTEGER PRIMARY KEY,
+                    full_name TEXT,
+                    added_by INTEGER,
+                    can_manage_appointments INTEGER DEFAULT 0,
+                    can_reply_questions INTEGER DEFAULT 0,
+                    can_view_stats INTEGER DEFAULT 0,
+                    can_broadcast INTEGER DEFAULT 0,
+                    can_manage_admins INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS question_admin_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    question_id INTEGER,
+                    chat_id INTEGER,
+                    message_id INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            # Mavjud questions jadvalini eski ma'lumotlarga zarar yetkazmasdan kengaytirish
+            async with db.execute("PRAGMA table_info(questions)") as cursor:
+                existing_cols = {row[1] for row in await cursor.fetchall()}
+            for col_name in ("username", "full_name", "answer_text", "answered_by"):
+                if col_name not in existing_cols:
+                    await db.execute(f"ALTER TABLE questions ADD COLUMN {col_name} TEXT")
             await db.commit()
 
 
@@ -297,25 +350,254 @@ async def get_admin_appointment_messages(appointment_id: int) -> list[dict]:
                 return [dict(r) for r in rows]
 
 
-async def save_anonymous_question(user_id: int, question_text: str) -> int:
-    """Anonim savolni bazaga kiritish"""
+async def save_anonymous_question(
+    user_id: int,
+    question_text: str,
+    username: str | None = None,
+    full_name: str | None = None
+) -> int:
+    """Shifokorga savolni bazaga kiritish"""
     if is_postgres():
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
             q_id = await conn.fetchval("""
-                INSERT INTO questions (user_id, question_text, status)
-                VALUES ($1, $2, 'Yangi')
+                INSERT INTO questions (user_id, username, full_name, question_text, status)
+                VALUES ($1, $2, $3, $4, 'Yangi')
                 RETURNING id;
-            """, user_id, question_text)
+            """, user_id, username or "", full_name or "", question_text)
             return q_id
     else:
         async with aiosqlite.connect(DATABASE_NAME) as db:
             cursor = await db.execute("""
-                INSERT INTO questions (user_id, question_text, status)
-                VALUES (?, ?, 'Yangi')
-            """, (user_id, question_text))
+                INSERT INTO questions (user_id, username, full_name, question_text, status)
+                VALUES (?, ?, ?, ?, 'Yangi')
+            """, (user_id, username or "", full_name or "", question_text))
             await db.commit()
             return cursor.lastrowid
+
+
+async def get_question_by_id(question_id: int) -> dict | None:
+    """Savolni ID bo'yicha olish"""
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM questions WHERE id = $1;", question_id)
+            return dict(row) if row else None
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT * FROM questions WHERE id = ?", (question_id,)) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
+
+async def update_question_answered(question_id: int, answer_text: str, answered_by: str):
+    """Savolga javob berilganini bazada belgilash"""
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE questions
+                SET status = 'answered', answer_text = $1, answered_by = $2
+                WHERE id = $3;
+            """, answer_text, answered_by, question_id)
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            await db.execute("""
+                UPDATE questions
+                SET status = 'answered', answer_text = ?, answered_by = ?
+                WHERE id = ?
+            """, (answer_text, answered_by, question_id))
+            await db.commit()
+
+
+async def save_admin_question_message(question_id: int, chat_id: int, message_id: int):
+    """Adminlarga yuborilgan savol xabarini saqlash"""
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO question_admin_messages (question_id, chat_id, message_id)
+                VALUES ($1, $2, $3);
+            """, question_id, chat_id, message_id)
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            await db.execute("""
+                INSERT INTO question_admin_messages (question_id, chat_id, message_id)
+                VALUES (?, ?, ?)
+            """, (question_id, chat_id, message_id))
+            await db.commit()
+
+
+async def get_admin_question_messages(question_id: int) -> list[dict]:
+    """Savolga tegishli barcha admin xabarlarini olish"""
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT chat_id, message_id FROM question_admin_messages
+                WHERE question_id = $1;
+            """, question_id)
+            return [dict(r) for r in rows]
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT chat_id, message_id FROM question_admin_messages
+                WHERE question_id = ?
+            """, (question_id,)) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+
+
+# ==========================================
+# DINAMIK ADMINLAR BOSHQARUVI
+# ==========================================
+async def get_admin_permissions(user_id: int) -> dict | None:
+    """Foydalanuvchi admin ekanligini va uning huquqlarini olish (Super Admin har doim to'liq huquqli)"""
+    if user_id in ADMIN_IDS:
+        return {
+            "user_id": user_id,
+            "is_super": True,
+            "can_manage_appointments": True,
+            "can_reply_questions": True,
+            "can_view_stats": True,
+            "can_broadcast": True,
+            "can_manage_admins": True,
+        }
+
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM admins WHERE user_id = $1;", user_id)
+            if not row:
+                return None
+            d = dict(row)
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT * FROM admins WHERE user_id = ?", (user_id,)) as cursor:
+                row = await cursor.fetchone()
+                if not row:
+                    return None
+                d = dict(row)
+
+    return {
+        "user_id": int(d["user_id"]),
+        "full_name": d.get("full_name") or "",
+        "is_super": False,
+        "can_manage_appointments": bool(d.get("can_manage_appointments")),
+        "can_reply_questions": bool(d.get("can_reply_questions")),
+        "can_view_stats": bool(d.get("can_view_stats")),
+        "can_broadcast": bool(d.get("can_broadcast")),
+        "can_manage_admins": bool(d.get("can_manage_admins")),
+    }
+
+
+async def get_all_admins() -> list[dict]:
+    """Bazadagi barcha qo'shilgan adminlarni olish"""
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM admins ORDER BY created_at ASC;")
+            return [dict(r) for r in rows]
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT * FROM admins ORDER BY created_at ASC") as cursor:
+                return [dict(r) for r in await cursor.fetchall()]
+
+
+async def get_admins_with_permission(perm_col: str) -> list[int]:
+    """Muayyan huquqqa ega barcha admin ID larini olish (Super Adminlar bilan birga)"""
+    allowed_cols = {
+        "can_manage_appointments",
+        "can_reply_questions",
+        "can_view_stats",
+        "can_broadcast",
+        "can_manage_admins",
+    }
+    if perm_col not in allowed_cols:
+        return list(ADMIN_IDS)
+
+    result = set(ADMIN_IDS)
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(f"SELECT user_id FROM admins WHERE {perm_col} = TRUE;")
+            for r in rows:
+                result.add(int(r["user_id"]))
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            async with db.execute(f"SELECT user_id FROM admins WHERE {perm_col} = 1") as cursor:
+                for r in await cursor.fetchall():
+                    result.add(int(r[0]))
+    return list(result)
+
+
+async def upsert_admin(user_id: int, full_name: str, added_by: int, perms: dict):
+    """Yangi admin qo'shish yoki mavjud admin huquqlarini yangilash"""
+    c_app = bool(perms.get("can_manage_appointments", False))
+    c_q = bool(perms.get("can_reply_questions", False))
+    c_st = bool(perms.get("can_view_stats", False))
+    c_br = bool(perms.get("can_broadcast", False))
+    c_ad = bool(perms.get("can_manage_admins", False))
+
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO admins (
+                    user_id, full_name, added_by,
+                    can_manage_appointments, can_reply_questions,
+                    can_view_stats, can_broadcast, can_manage_admins
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    full_name = EXCLUDED.full_name,
+                    added_by = EXCLUDED.added_by,
+                    can_manage_appointments = EXCLUDED.can_manage_appointments,
+                    can_reply_questions = EXCLUDED.can_reply_questions,
+                    can_view_stats = EXCLUDED.can_view_stats,
+                    can_broadcast = EXCLUDED.can_broadcast,
+                    can_manage_admins = EXCLUDED.can_manage_admins;
+            """, user_id, full_name, added_by, c_app, c_q, c_st, c_br, c_ad)
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            await db.execute("""
+                INSERT INTO admins (
+                    user_id, full_name, added_by,
+                    can_manage_appointments, can_reply_questions,
+                    can_view_stats, can_broadcast, can_manage_admins
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    full_name = excluded.full_name,
+                    added_by = excluded.added_by,
+                    can_manage_appointments = excluded.can_manage_appointments,
+                    can_reply_questions = excluded.can_reply_questions,
+                    can_view_stats = excluded.can_view_stats,
+                    can_broadcast = excluded.can_broadcast,
+                    can_manage_admins = excluded.can_manage_admins
+            """, (user_id, full_name, added_by, int(c_app), int(c_q), int(c_st), int(c_br), int(c_ad)))
+            await db.commit()
+
+
+async def delete_admin(user_id: int) -> bool:
+    """Dinamik adminni o'chirish (Super Adminlar o'chirilmaydi)"""
+    if user_id in ADMIN_IDS:
+        return False
+
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute("DELETE FROM admins WHERE user_id = $1;", user_id)
+            return res.endswith("1")
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            cursor = await db.execute("DELETE FROM admins WHERE user_id = ?", (user_id,))
+            await db.commit()
+            return cursor.rowcount > 0
 
 
 async def get_appointments_stats() -> dict:
