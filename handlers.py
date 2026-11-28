@@ -917,8 +917,7 @@ async def process_admin_lead_decision(callback: CallbackQuery, bot: Bot):
             f"✅ <b>Qabulga yozilish tasdiqlandi!</b>\n\n"
             f"Joyingizni boshqa bemorga berib yubormasligimiz uchun oldindan to‘lovni quyidagi kartaga o‘tkazing:\n"
             f"💳 <b>Karta raqami:</b> <code>{PAYMENT_CARD_NUMBER}</code> ({PAYMENT_CARD_HOLDER})\n"
-            f"💰 <b>Oldindan to‘lov (aniq summa):</b> <b>{_fmt_money(prepay)} so‘m</b> <i>(iltimos, aynan shu summani o‘tkazing)</i>\n"
-            f"🏥 <b>Klinikada to‘lanadigan qoldiq:</b> <b>{_fmt_money(remaining)} so‘m</b>\n\n"
+            f"💰 <b>Oldindan to‘lov (aniq summa):</b> <b>{_fmt_money(prepay)} so‘m</b> <i>(iltimos, aynan shu summani o‘tkazing)</i>\n\n"
             f"👇 To‘lov qilgach, pastdagi tugmani bosib chek rasmini yuboring!"
         )
         try:
@@ -1171,7 +1170,7 @@ async def process_admin_payment_verification(callback: CallbackQuery, bot: Bot):
             f"🎫 <b>Sizning tartib raqamingiz: № {client_number}</b>\n"
             f"📅 <b>Belgilangan kun va vaqt:</b> {when_str}\n"
             f"🏥 <b>Manzil:</b> Bulung‘ur tumani, «Yulduz» kinoteatri yonidagi <b>Gammamed Plus</b> klinikasi.\n"
-            f"💵 <b>Klinika resepshnida to‘lanadigan qoldiq:</b> <b>{_fmt_money(remaining)} so‘m</b>.\n"
+            f"💵 <b>Klinika resepshnida to‘lanadigan qoldiq:</b> <b>60 000 so‘m</b>.\n"
             f"📋 <b>O‘zingiz bilan oling:</b> Barcha eski UTT va analiz qog‘ozlaringizni.\n\n"
             f"📌 <i>Belgilangan kunda klinikaga kelib, resepshnga ushbu xabarni va <b>№ {client_number}</b> raqamingizni ko‘rsating.</i>"
         )
