@@ -5,11 +5,42 @@ import re
 from aiohttp import web
 from aiogram import Bot
 
-from config import ADMIN_IDS, ADMIN_GROUP_ID
+from config import ADMIN_IDS, ADMIN_GROUP_ID, CHATPLACE_WEBHOOK_SECRET
 import database
 from keyboards import get_admin_appointment_kb
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_phone(phone: str) -> str:
+    """Telefon raqamni yagona +998XXXXXXXXX formatiga keltirish"""
+    raw = str(phone or "").strip()
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) == 9:
+        return f"+998{digits}"
+    if len(digits) == 12 and digits.startswith("998"):
+        return f"+{digits}"
+    if raw.startswith("+") and len(digits) >= 9:
+        return f"+{digits}"
+    return raw or "Kiritilmagan"
+
+
+def _verify_chatplace_secret(request: web.Request) -> bool:
+    """Agar CHATPLACE_WEBHOOK_SECRET belgilangan bo'lsa, header yoki ?token= orqali tekshirish"""
+    secret = os.getenv("CHATPLACE_WEBHOOK_SECRET", CHATPLACE_WEBHOOK_SECRET).strip()
+    if not secret:
+        return True
+
+    token_query = request.query.get("token", "").strip()
+    header_secret = (
+        request.headers.get("X-ChatPlace-Secret")
+        or request.headers.get("X-Webhook-Secret")
+        or ""
+    ).strip()
+    auth_header = request.headers.get("Authorization", "").strip()
+    bearer_token = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else ""
+
+    return secret in (token_query, header_secret, bearer_token)
 
 
 async def health_check_handler(request: web.Request) -> web.Response:
@@ -22,16 +53,35 @@ async def chatplace_webhook_handler(request: web.Request) -> web.Response:
     ChatPlace.io Pro dan Instagram Direct arizalarini qabul qiluvchi webhook.
     Kutilayotgan JSON: {"name": "...", "phone": "...", "problem": "..."}
     """
+    if not _verify_chatplace_secret(request):
+        return web.json_response({"ok": False, "error": "Unauthorized"}, status=401)
+
     try:
         data = await request.json()
     except Exception:
         return web.json_response({"ok": False, "error": "Invalid JSON"}, status=400)
 
     name = str(data.get("name") or data.get("full_name") or "Noma'lum").strip()
-    phone = str(data.get("phone") or data.get("phone_number") or "Kiritilmagan").strip()
+    raw_phone = str(data.get("phone") or data.get("phone_number") or "Kiritilmagan").strip()
+    phone = normalize_phone(raw_phone)
     problem = str(data.get("problem") or data.get("service") or "Ko'rsatilmagan").strip()
 
     try:
+        # Oxirgi 24 soat ichida aynan shu telefon raqamdan ariza tushgan bo'lsa, dublikat ochmasdan yangilaymiz
+        if phone != "Kiritilmagan":
+            existing = await database.find_recent_appointment_by_phone(phone, hours=24)
+            if existing:
+                await database.update_chatplace_appointment(
+                    app_id=existing["id"],
+                    patient_name=name,
+                    service=problem,
+                    notes="Instagram Direct (ChatPlace - yangilandi)"
+                )
+                return web.json_response(
+                    {"ok": True, "appointment_id": existing["id"], "deduplicated": True},
+                    status=200
+                )
+
         app_id = await database.create_appointment(
             user_id=0,
             service=problem,

@@ -56,9 +56,12 @@ TOTAL_CONSULTATION_PRICE: int = int(os.getenv("TOTAL_CONSULTATION_PRICE", "90000
 PREPAYMENT_BASE: int = int(os.getenv("PREPAYMENT_BASE", "30000"))
 CLINIC_REMAINING_AMOUNT: int = int(os.getenv("CLINIC_REMAINING_AMOUNT", "60000"))
 
-# Plastik karta to'lov ma'lumotlari
-PAYMENT_CARD_NUMBER: str = os.getenv("PAYMENT_CARD_NUMBER", "5440 8103 7227 3697")
-PAYMENT_CARD_HOLDER: str = os.getenv("PAYMENT_CARD_HOLDER", "ABDUFATTAXOV AZIZBEK")
+# Plastik karta to'lov ma'lumotlari (haqiqiy ma'lumotlar faqat .env / Render Environment Variables da saqlanadi)
+PAYMENT_CARD_NUMBER: str = os.getenv("PAYMENT_CARD_NUMBER", "8600 XXXX XXXX XXXX")
+PAYMENT_CARD_HOLDER: str = os.getenv("PAYMENT_CARD_HOLDER", "Karta egasi F.I.O.")
+
+# ChatPlace.io Pro webhook himoya kaliti (ixtiyoriy)
+CHATPLACE_WEBHOOK_SECRET: str = os.getenv("CHATPLACE_WEBHOOK_SECRET", "")
 
 # Kasalliklar ro'yxati rejimi (False = 10 ta kasallik, True = 3 ta umumlashgan tugma)
 USE_SHORT_DISEASE_LIST: bool = os.getenv("USE_SHORT_DISEASE_LIST", "false").lower() == "true"

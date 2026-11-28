@@ -374,6 +374,53 @@ async def link_appointment_user_id(app_id: int, user_id: int):
             await db.commit()
 
 
+async def find_recent_appointment_by_phone(phone_number: str, hours: int = 24) -> dict | None:
+    """Oxirgi N soat ichida aynan shu telefon raqamdan tushgan arizani topish (dublikat filtri)"""
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT * FROM appointments
+                WHERE phone_number = $1
+                  AND created_at >= NOW() - ($2 * INTERVAL '1 hour')
+                ORDER BY id DESC
+                LIMIT 1;
+            """, phone_number, hours)
+            return dict(row) if row else None
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT * FROM appointments
+                WHERE phone_number = ?
+                  AND datetime(created_at) >= datetime('now', ?)
+                ORDER BY id DESC
+                LIMIT 1
+            """, (phone_number, f"-{hours} hours")) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
+
+async def update_chatplace_appointment(app_id: int, patient_name: str, service: str, notes: str):
+    """Mavjud ChatPlace arizasini dublikat ochmasdan yangilash"""
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE appointments
+                SET patient_name = $1, service = $2, notes = $3
+                WHERE id = $4;
+            """, patient_name, service, notes, app_id)
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            await db.execute("""
+                UPDATE appointments
+                SET patient_name = ?, service = ?, notes = ?
+                WHERE id = ?
+            """, (patient_name, service, notes, app_id))
+            await db.commit()
+
+
 async def get_appointment_by_id(app_id: int) -> dict | None:
     """Arizani ID bo'yicha olish"""
     if is_postgres():
