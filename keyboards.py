@@ -33,8 +33,7 @@ def get_main_menu_kb() -> ReplyKeyboardMarkup:
             KeyboardButton(text="👩‍⚕️ Shifokor haqida")
         ],
         [
-            KeyboardButton(text="📍 Manzil va ish vaqti"),
-            KeyboardButton(text="💬 Shifokorga savol berish")
+            KeyboardButton(text="📍 Manzil va ish vaqti")
         ]
     ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
@@ -366,21 +365,15 @@ def get_admin_perm_toggle_kb(perms: dict) -> InlineKeyboardMarkup:
                 callback_data="adm_perm:can_manage_appointments"
             ),
             InlineKeyboardButton(
-                text=f"{icon('can_reply_questions')} Savollar",
-                callback_data="adm_perm:can_reply_questions"
+                text=f"{icon('can_view_stats')} Statistika/Target",
+                callback_data="adm_perm:can_view_stats"
             )
         ],
         [
-            InlineKeyboardButton(
-                text=f"{icon('can_view_stats')} Statistika/Target",
-                callback_data="adm_perm:can_view_stats"
-            ),
             InlineKeyboardButton(
                 text=f"{icon('can_broadcast')} Xabar tarqatish",
                 callback_data="adm_perm:can_broadcast"
-            )
-        ],
-        [
+            ),
             InlineKeyboardButton(
                 text=f"{icon('can_manage_admins')} Adminlar boshqaruvi",
                 callback_data="adm_perm:can_manage_admins"
@@ -412,18 +405,6 @@ def get_admin_list_kb(admins_list: list[dict], super_admin_ids: list[int]) -> In
         InlineKeyboardButton(text="⬅️ Orqaga", callback_data="adm_mgr:menu")
     ])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def get_question_reply_kb(question_id: int) -> InlineKeyboardMarkup:
-    """Savolga javob yozish tugmasi"""
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(
-                text="✍️ Javob yozish",
-                callback_data=f"reply_q:{question_id}"
-            )
-        ]
-    ])
 
 
 def get_services_info_inline_kb(button_text: str = "📅 Hozir qabulga yozilish") -> InlineKeyboardMarkup:

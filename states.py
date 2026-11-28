@@ -10,16 +10,6 @@ class AppointmentState(StatesGroup):
     appointment_time = State()  # 5-bosqich: Qabul vaqtini tanlash
 
 
-class AnonymousQuestionState(StatesGroup):
-    """Shifokorga savol berish bosqichi"""
-    waiting_for_question = State()
-
-
-class QuestionReplyState(StatesGroup):
-    """Admin tomonidan foydalanuvchi savoliga javob yozish bosqichi"""
-    waiting_for_reply = State()
-
-
 class AdminBroadcastState(StatesGroup):
     """Barcha foydalanuvchilarga xabar yuborish (Admin)"""
     waiting_for_message = State()

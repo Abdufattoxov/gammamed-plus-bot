@@ -34,8 +34,6 @@ import google_sheets
 import meta_ads
 from states import (
     AppointmentState,
-    AnonymousQuestionState,
-    QuestionReplyState,
     AdminBroadcastState,
     AdminManageState
 )
@@ -52,7 +50,6 @@ from keyboards import (
     get_admin_manage_kb,
     get_admin_perm_toggle_kb,
     get_admin_list_kb,
-    get_question_reply_kb,
     get_services_info_inline_kb
 )
 
@@ -116,8 +113,6 @@ def is_menu_navigation(text: str | None) -> bool:
         "Xizmatlar va narxlar",
         "Shifokor haqida",
         "Manzil va ish vaqti",
-        "Shifokorga savol",
-        "Anonim savol",
         "Bekor qilish"
     ]
     return any(k in t for k in keywords)
@@ -347,215 +342,6 @@ async def contact_fallback_handler(message: Message, state: FSMContext):
         f"Quyidagi tugma orqali arizangizni qoldirishingiz mumkin:"
     )
     await message.answer(text=text, reply_markup=get_services_info_inline_kb())
-
-
-# ==========================================
-# 5. SHIFOKORGA SAVOL BERISH VA JAVOB QAYTARISH
-# ==========================================
-@router.message(F.text.func(lambda t: t and ("Shifokorga savol" in t or "Anonim savol" in t)), StateFilter("*"))
-async def anon_question_start(message: Message, state: FSMContext):
-    """Shifokorga savol berishni boshlash"""
-    await state.clear()
-    await track_event(message, "menu_anon_question")
-    await state.set_state(AnonymousQuestionState.waiting_for_question)
-    text = (
-        f"💬 <b>Shifokorga savol yo‘llash</b>\n\n"
-        f"Siz ayollar salomatligi yoki psixosomatika bo‘yicha o‘zingizni o‘ylantirayotgan "
-        f"savolingizni bevosita <b>{DOCTOR_NAME}</b>ga yuborishingiz mumkin.\n\n"
-        f"🔒 <b>Maxfiylik kafolati:</b>\n"
-        f"Savolingiz begonalarga ko‘rinmaydi, faqat shifokor va ma’muriyatga yetib boradi. "
-        f"Javob to‘g‘ridan-to‘g‘ri sizning shu botingizga yuboriladi.\n\n"
-        f"{SAFETY_NOTICE}\n\n"
-        f"✍️ <i>Savolingizni bitta xabarda batafsil yozib yuboring:</i>"
-    )
-    await message.answer(
-        text=text,
-        reply_markup=get_cancel_reply_kb()
-    )
-
-
-@router.message(AnonymousQuestionState.waiting_for_question, F.text)
-async def anon_question_receive(message: Message, state: FSMContext, bot: Bot):
-    """Savolni qabul qilish, bazaga saqlash va javob huquqiga ega adminlarga yuborish"""
-    if is_menu_navigation(message.text):
-        await state.clear()
-        if "Bekor qilish" in message.text:
-            await message.answer("Savol yuborish bekor qilindi.", reply_markup=get_main_menu_kb())
-            return
-
-    question_text = message.text.strip()
-    if len(question_text) < 10:
-        await message.answer(
-            "Iltimos, savolingizni biroz to‘liqroq bayon qiling (kamida 10 ta belgi).",
-            reply_markup=get_cancel_reply_kb()
-        )
-        return
-
-    user = message.from_user
-    user_id = user.id if user else 0
-    username = user.username if user and user.username else ""
-    full_name = user.full_name if user else "Noma'lum"
-
-    question_id = await database.save_anonymous_question(
-        user_id=user_id,
-        question_text=question_text,
-        username=username,
-        full_name=full_name
-    )
-    await state.clear()
-
-    reply_text = (
-        f"🕊 <b>Savolingiz muvaffaqiyatli qabul qilindi!</b>\n\n"
-        f"Savolingiz <b>#Q-{question_id}</b> raqami bilan shifokor va ma’muriyatga yetkazildi. "
-        f"Javob tayyor bo‘lishi bilan shu bot orqali sizga yuboriladi.\n\n"
-        f"Salomatligingizga befarq bo‘lmaganingiz uchun tashakkur!"
-    )
-    await message.answer(
-        text=reply_text,
-        reply_markup=get_main_menu_kb()
-    )
-
-    username_display = f"@{username}" if username else "mavjud emas"
-    notify_text = (
-        f"💬 <b>YANGI SAVOL (#Q-{question_id})</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"👤 <b>Ismi:</b> <a href='tg://user?id={user_id}'>{full_name}</a>\n"
-        f"🔗 <b>Username:</b> {username_display}\n"
-        f"🆔 <b>Telegram ID:</b> <code>{user_id}</code>\n"
-        f"⏰ <b>Vaqti:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"📝 <b>Savol matni:</b>\n"
-        f"<i>«{question_text}»</i>"
-    )
-
-    target_admins = await database.get_admins_with_permission("can_reply_questions")
-    for admin_id in target_admins:
-        try:
-            sent_msg = await bot.send_message(
-                chat_id=admin_id,
-                text=notify_text,
-                reply_markup=get_question_reply_kb(question_id)
-            )
-            await database.save_admin_question_message(question_id, sent_msg.chat.id, sent_msg.message_id)
-        except Exception:
-            pass
-
-    if ADMIN_GROUP_ID:
-        try:
-            sent_msg = await bot.send_message(
-                chat_id=ADMIN_GROUP_ID,
-                text=notify_text,
-                reply_markup=get_question_reply_kb(question_id)
-            )
-            await database.save_admin_question_message(question_id, sent_msg.chat.id, sent_msg.message_id)
-        except Exception:
-            pass
-
-
-@router.callback_query(F.data.startswith("reply_q:"))
-async def start_question_reply(callback: CallbackQuery, state: FSMContext):
-    """Admin savolga javob yozish tugmasini bosganda"""
-    user_id = callback.from_user.id if callback.from_user else 0
-    perms = await database.get_admin_permissions(user_id)
-    if not perms or not perms.get("can_reply_questions"):
-        return
-
-    q_id = int(callback.data.split(":", 1)[1])
-    question = await database.get_question_by_id(q_id)
-    if not question:
-        await callback.answer("Savol bazadan topilmadi.", show_alert=True)
-        return
-
-    await state.set_state(QuestionReplyState.waiting_for_reply)
-    await state.update_data(reply_question_id=q_id)
-    await callback.answer()
-    await callback.message.answer(
-        f"✍️ <b>#Q-{q_id} raqamli savolga javob yozing:</b>\n\n"
-        f"<i>Foydalanuvchi: {question.get('full_name') or 'Noma’lum'}</i>\n"
-        f"Javob matnini yuboring (bekor qilish uchun «❌ Bekor qilish» tugmasini bosing):",
-        reply_markup=get_cancel_reply_kb()
-    )
-
-
-@router.message(QuestionReplyState.waiting_for_reply, F.text)
-async def send_question_reply(message: Message, state: FSMContext, bot: Bot):
-    """Admin yozgan javobni to'g'ridan-to'g'ri savol egasiga yuborish va adminlarda xabarni yangilash"""
-    user_id = message.from_user.id if message.from_user else 0
-    perms = await database.get_admin_permissions(user_id)
-    if not perms or not perms.get("can_reply_questions"):
-        await state.clear()
-        return
-
-    if is_menu_navigation(message.text) and "Bekor qilish" in message.text:
-        await state.clear()
-        await message.answer("Javob yozish bekor qilindi.", reply_markup=get_main_menu_kb())
-        return
-
-    data = await state.get_data()
-    q_id = data.get("reply_question_id")
-    await state.clear()
-
-    question = await database.get_question_by_id(q_id)
-    if not question:
-        await message.answer("❌ Savol bazadan topilmadi.", reply_markup=get_main_menu_kb())
-        return
-
-    reply_text = message.text.strip()
-    admin_name = message.from_user.first_name if message.from_user else "Admin"
-
-    # 1. Savol egasiga to'g'ridan-to'g'ri javob yuborish
-    patient_msg = (
-        f"👩‍⚕️ <b>Dr. Zarifa klinikasidan savolingizga javob:</b>\n\n"
-        f"{reply_text}"
-    )
-    try:
-        await bot.send_message(chat_id=question["user_id"], text=patient_msg)
-        sent_ok = True
-    except Exception:
-        sent_ok = False
-
-    # 2. Bazada answered qilib belgilash
-    await database.update_question_answered(q_id, reply_text, admin_name)
-
-    # 3. Barcha adminlardagi savol xabarini yangilash
-    q_username = question.get("username") or ""
-    q_uname_disp = f"@{q_username}" if q_username else "mavjud emas"
-    q_full_name = question.get("full_name") or "Foydalanuvchi"
-    q_uid = question.get("user_id")
-    updated_admin_text = (
-        f"💬 <b>SAVOL (#Q-{q_id})</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"👤 <b>Ismi:</b> <a href='tg://user?id={q_uid}'>{q_full_name}</a>\n"
-        f"🔗 <b>Username:</b> {q_uname_disp}\n"
-        f"🆔 <b>Telegram ID:</b> <code>{q_uid}</code>\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"📝 <b>Savol:</b> <i>«{question.get('question_text', '')}»</i>\n\n"
-        f"✅ <b>Ushbu savolga javob berildi ({admin_name} tomonidan):</b>\n"
-        f"<i>{reply_text}</i>"
-    )
-
-    admin_msgs = await database.get_admin_question_messages(q_id)
-    for m in admin_msgs:
-        try:
-            await bot.edit_message_text(
-                chat_id=m["chat_id"],
-                message_id=m["message_id"],
-                text=updated_admin_text,
-                reply_markup=None
-            )
-        except Exception:
-            pass
-
-    if sent_ok:
-        await message.answer(
-            f"✅ #Q-{q_id} raqamli savolga javob foydalanuvchiga muvaffaqiyatli yuborildi!",
-            reply_markup=get_main_menu_kb()
-        )
-    else:
-        await message.answer(
-            f"⚠️ Bazada belgilandi, lekin foydalanuvchi botni bloklaganligi sababli xabar yetib bormadi.",
-            reply_markup=get_main_menu_kb()
-        )
 
 
 # ==========================================
@@ -1119,8 +905,7 @@ async def admin_stats_callback(callback: CallbackQuery):
         f"• 📅 Qabulga yozilish: <b>{menu['menu_booking']['total']}</b> ({menu['menu_booking']['unique']} kishi)\n"
         f"• 🩺 Xizmatlarimiz: <b>{menu['menu_services']['total']}</b> ({menu['menu_services']['unique']} kishi)\n"
         f"• 👩‍⚕️ Shifokor haqida: <b>{menu['menu_doctor']['total']}</b> ({menu['menu_doctor']['unique']} kishi)\n"
-        f"• 📍 Manzil va ish vaqti: <b>{menu['menu_location']['total']}</b> ({menu['menu_location']['unique']} kishi)\n"
-        f"• 💬 Shifokorga savol: <b>{menu['menu_anon_question']['total']}</b> ({menu['menu_anon_question']['unique']} kishi)\n\n"
+        f"• 📍 Manzil va ish vaqti: <b>{menu['menu_location']['total']}</b> ({menu['menu_location']['unique']} kishi)\n\n"
         f"📉 <b>Qabulga yozilish voronkasi (noyob foydalanuvchilar):</b>\n"
         + "\n".join(funnel_lines) + "\n\n"
         f"{dropoff_text}\n"
@@ -1303,8 +1088,6 @@ def _format_perms_summary(adm: dict) -> str:
     labels = []
     if adm.get("can_manage_appointments"):
         labels.append("Arizalar")
-    if adm.get("can_reply_questions"):
-        labels.append("Savollar")
     if adm.get("can_view_stats"):
         labels.append("Statistika/Target")
     if adm.get("can_broadcast"):
@@ -1418,7 +1201,6 @@ async def admin_manage_receive_user(message: Message, state: FSMContext):
 
     default_perms = {
         "can_manage_appointments": True,
-        "can_reply_questions": True,
         "can_view_stats": False,
         "can_broadcast": False,
         "can_manage_admins": False,
