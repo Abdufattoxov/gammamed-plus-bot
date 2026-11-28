@@ -24,3 +24,8 @@ class AdminManageState(StatesGroup):
 class PaymentReceiptState(StatesGroup):
     """Mijozdan to'lov cheki rasmini kutish holati"""
     waiting_for_receipt = State()
+
+
+class DirectPaymentState(StatesGroup):
+    """Instagram Direct / telefon orqali yozilgan bemordan telefon raqam so'rash holati"""
+    waiting_for_phone = State()

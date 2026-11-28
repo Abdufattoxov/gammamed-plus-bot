@@ -41,12 +41,14 @@ from states import (
     AppointmentState,
     AdminBroadcastState,
     AdminManageState,
-    PaymentReceiptState
+    PaymentReceiptState,
+    DirectPaymentState
 )
 from keyboards import (
     get_main_menu_kb,
     get_back_cancel_reply_kb,
     get_phone_request_kb,
+    get_direct_payment_phone_kb,
     get_cancel_reply_kb,
     get_problems_inline_kb,
     generate_calendar_kb,
@@ -121,6 +123,8 @@ def is_menu_navigation(text: str | None) -> bool:
     t = text.strip()
     keywords = [
         "Qabulga yozilish",
+        "Oldindan to‘lov",
+        "Joyni band qilish",
         "Qabul narxi",
         "Xizmatlarimiz",
         "Xizmatlar va narxlar",
@@ -309,6 +313,104 @@ async def price_info_handler(message: Message, state: FSMContext):
         text=text,
         reply_markup=get_services_info_inline_kb("📅 Hoziroq qabulga yozilish")
     )
+
+
+# ==========================================
+# 4.1. TO'G'RIDAN-TO'G'RI OLDINDAN TO'LOV (INSTAGRAM / TELEFON MIJOZLARI)
+# ==========================================
+async def _send_direct_payment_instructions(message: Message, state: FSMContext, app: dict):
+    """Topilgan ariza uchun karta ma'lumotlari, unikal summa va chek tugmasini yuborish"""
+    app_id = app["id"]
+    prepay = app.get("prepayment_amount")
+    if not prepay:
+        prepay = PREPAYMENT_BASE + (app_id % 99) + 1
+    remaining = CLINIC_REMAINING_AMOUNT
+
+    if not app.get("prepayment_amount") or app.get("payment_status") == "unpaid":
+        await database.set_appointment_prepayment(app_id, prepay, remaining)
+
+    await state.set_state(PaymentReceiptState.waiting_for_receipt)
+    await state.update_data(receipt_app_id=app_id)
+
+    patient_name = app.get("patient_name") or "Hurmatli bemor"
+    payment_text = (
+        f"💳 <b>Oldindan to‘lov (Joyni band qilish)</b>\n\n"
+        f"👤 <b>Bemor:</b> {patient_name}\n"
+        f"Joyingizni boshqa bemorga berib yubormasligimiz uchun oldindan to‘lovni quyidagi kartaga o‘tkazing:\n\n"
+        f"💳 <b>Karta raqami:</b> <code>{PAYMENT_CARD_NUMBER}</code>\n"
+        f"👤 <b>Karta egasi:</b> {PAYMENT_CARD_HOLDER}\n"
+        f"💰 <b>Oldindan to‘lov (aniq summa):</b> <b>{_fmt_money(prepay)} so‘m</b> <i>(iltimos, aynan shu summani o‘tkazing)</i>\n"
+        f"🏥 <b>Klinikada to‘lanadigan qoldiq:</b> <b>{_fmt_money(remaining)} so‘m</b>\n\n"
+        f"👇 To‘lov qilgach, pastdagi tugmani bosib chek rasmini yuboring!"
+    )
+    await message.answer("To‘lov ma’lumotlari:", reply_markup=get_main_menu_kb())
+    await message.answer(text=payment_text, reply_markup=get_client_receipt_kb(app_id))
+
+
+@router.message(F.text.func(lambda t: t and ("Oldindan to‘lov" in t or "Joyni band qilish" in t)), StateFilter("*"))
+async def direct_payment_start(message: Message, state: FSMContext):
+    """'💳 Oldindan to'lov (Joyni band qilish)' tugmasi bosilganda"""
+    await state.clear()
+    user_id = message.from_user.id if message.from_user else 0
+
+    # 1-holat: user_id bo'yicha oxirgi faol/to'lanmagan arizani qidirish
+    app = await database.get_active_unpaid_appointment_by_user(user_id)
+    if app:
+        await _send_direct_payment_instructions(message, state, app)
+        return
+
+    # 2-holat: user_id bo'yicha topilmasa (masalan Instagram Direct / telefon mijozlari) — telefon so'rash
+    await state.set_state(DirectPaymentState.waiting_for_phone)
+    await message.answer(
+        "📱 <b>Arizangizni topish uchun telefon raqamingizni yuboring:</b>\n\n"
+        "Pastdagi <b>«📱 Telefon raqamni yuborish»</b> tugmasini bosing yoki raqamingizni yozib yuboring "
+        "<i>(masalan: <code>90 123 45 67</code>)</i>:",
+        reply_markup=get_direct_payment_phone_kb()
+    )
+
+
+@router.message(DirectPaymentState.waiting_for_phone, F.contact)
+async def direct_payment_phone_contact(message: Message, state: FSMContext):
+    """Kontakt orqali yuborilgan telefon raqami bo'yicha arizani topish"""
+    phone = message.contact.phone_number if message.contact else ""
+    await _lookup_and_proceed_direct_payment(message, state, phone)
+
+
+@router.message(DirectPaymentState.waiting_for_phone, F.text)
+async def direct_payment_phone_text(message: Message, state: FSMContext):
+    """Matn orqali yozilgan telefon raqami bo'yicha arizani topish"""
+    if is_menu_navigation(message.text):
+        await state.clear()
+        if "Bekor qilish" in message.text:
+            await message.answer("Amaliyot bekor qilindi.", reply_markup=get_main_menu_kb())
+        return
+    await _lookup_and_proceed_direct_payment(message, state, message.text)
+
+
+async def _lookup_and_proceed_direct_payment(message: Message, state: FSMContext, raw_phone: str):
+    """Telefon raqamini normallashtirib bazadan arizani topish va user_id ga bog'lash"""
+    norm = database.normalize_phone(raw_phone)
+    if len(norm) < 9:
+        await message.answer(
+            "Iltimos, telefon raqamingizni to‘liq va to‘g‘ri kiriting (masalan: <code>90 123 45 67</code>):",
+            reply_markup=get_direct_payment_phone_kb()
+        )
+        return
+
+    user_id = message.from_user.id if message.from_user else 0
+    app = await database.get_active_unpaid_appointment_by_phone(norm)
+    if not app:
+        await state.clear()
+        await message.answer(
+            "❌ <b>Sizning arizangiz topilmadi.</b>\n\n"
+            "Iltimos, avval <b>«📅 Qabulga yozilish»</b> tugmasini bosing yoki administrator qo‘ng‘irog‘ini kuting.",
+            reply_markup=get_main_menu_kb()
+        )
+        return
+
+    await database.link_appointment_user_id(app["id"], user_id)
+    app["user_id"] = user_id
+    await _send_direct_payment_instructions(message, state, app)
 
 
 @router.message(F.text.func(lambda t: t and any(k in t for k in ["Xizmatlarimiz", "Xizmatlar"])), StateFilter("*"))

@@ -29,12 +29,24 @@ def get_main_menu_kb() -> ReplyKeyboardMarkup:
             KeyboardButton(text="💰 Qabul narxi")
         ],
         [
+            KeyboardButton(text="💳 Oldindan to‘lov (Joyni band qilish)")
+        ],
+        [
             KeyboardButton(text="🩺 Xizmatlarimiz"),
             KeyboardButton(text="👩‍⚕️ Shifokor haqida")
         ],
         [
             KeyboardButton(text="📍 Manzil va ish vaqti")
         ]
+    ]
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+
+
+def get_direct_payment_phone_kb() -> ReplyKeyboardMarkup:
+    """Oldindan to'lov bo'limida telefon raqamni yuborish tugmasi"""
+    buttons = [
+        [KeyboardButton(text="📱 Telefon raqamni yuborish", request_contact=True)],
+        [KeyboardButton(text="❌ Bekor qilish")]
     ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 

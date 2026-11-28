@@ -1524,3 +1524,92 @@ async def delete_unpaid_test_appointments() -> int:
             await db.execute("DELETE FROM appointments WHERE payment_status != 'paid' OR payment_status IS NULL")
             await db.commit()
             return len(ids)
+
+
+# ==========================================
+# TO'G'RIDAN-TO'G'RI TO'LOV UCHUN ARIZA QIDIRISH
+# ==========================================
+def normalize_phone(phone: str) -> str:
+    """Telefon raqamidan faqat raqamlarni ajratib, oxirgi 9 ta raqamni qaytarish"""
+    digits = "".join(ch for ch in (phone or "") if ch.isdigit())
+    return digits[-9:] if len(digits) >= 9 else digits
+
+
+async def get_active_unpaid_appointment_by_user(user_id: int) -> dict | None:
+    """Foydalanuvchining user_id bo'yicha oxirgi faol/to'lanmagan arizasini topish"""
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT * FROM appointments
+                WHERE user_id = $1
+                  AND COALESCE(payment_status, 'unpaid') NOT IN ('paid', 'rejected')
+                  AND COALESCE(status, '') NOT LIKE 'Rad etildi%'
+                ORDER BY id DESC LIMIT 1;
+            """, user_id)
+            return dict(row) if row else None
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT * FROM appointments
+                WHERE user_id = ?
+                  AND COALESCE(payment_status, 'unpaid') NOT IN ('paid', 'rejected')
+                  AND COALESCE(status, '') NOT LIKE 'Rad etildi%'
+                ORDER BY id DESC LIMIT 1
+            """, (user_id,)) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
+
+async def get_active_unpaid_appointment_by_phone(phone: str) -> dict | None:
+    """Telefon raqami bo'yicha oxirgi faol/to'lanmagan arizani topish (Instagram/ChatPlace va Bot)"""
+    norm = normalize_phone(phone)
+    if len(norm) < 7:
+        return None
+
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT * FROM appointments
+                WHERE COALESCE(payment_status, 'unpaid') NOT IN ('paid', 'rejected')
+                  AND COALESCE(status, '') NOT LIKE 'Rad etildi%'
+                ORDER BY id DESC LIMIT 200;
+            """)
+            for r in rows:
+                if normalize_phone(r["phone_number"] or "") == norm:
+                    return dict(r)
+            return None
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT * FROM appointments
+                WHERE COALESCE(payment_status, 'unpaid') NOT IN ('paid', 'rejected')
+                  AND COALESCE(status, '') NOT LIKE 'Rad etildi%'
+                ORDER BY id DESC LIMIT 200
+            """) as cursor:
+                rows = await cursor.fetchall()
+                for r in rows:
+                    if normalize_phone(r["phone_number"] or "") == norm:
+                        return dict(r)
+                return None
+
+
+async def link_appointment_user_id(appointment_id: int, user_id: int):
+    """Telefon orqali topilgan arizaga bemorning Telegram user_id sini bog'lash"""
+    if is_postgres():
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE appointments SET user_id = $1 WHERE id = $2;",
+                user_id, appointment_id
+            )
+    else:
+        async with aiosqlite.connect(DATABASE_NAME) as db:
+            await db.execute(
+                "UPDATE appointments SET user_id = ? WHERE id = ?",
+                (user_id, appointment_id)
+            )
+            await db.commit()
