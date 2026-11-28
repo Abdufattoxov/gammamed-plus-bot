@@ -310,6 +310,12 @@ def get_admin_panel_kb() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(
+                text="📈 Target natijalari",
+                callback_data="admin_meta_ads"
+            )
+        ],
+        [
+            InlineKeyboardButton(
                 text="📢 Barchaga xabar yuborish (Broadcast)",
                 callback_data="admin_broadcast"
             )

@@ -30,6 +30,11 @@ DATABASE_URL: str = os.getenv("DATABASE_URL", "")
 GOOGLE_SHEET_WEBHOOK_URL: str = os.getenv("GOOGLE_SHEET_WEBHOOK_URL", "")
 GOOGLE_SHEET_URL: str = os.getenv("GOOGLE_SHEET_URL", "")
 
+# Meta Ads (Instagram / Facebook Target) API sozlamalari
+META_ACCESS_TOKEN: str = os.getenv("META_ACCESS_TOKEN", "")
+META_AD_ACCOUNT_ID: str = os.getenv("META_AD_ACCOUNT_ID", "1514294217269797")
+USD_TO_UZS: int = int(os.getenv("USD_TO_UZS", "12850"))
+
 # Klinika va shifokor ma'lumotlari
 CLINIC_NAME: str = "Gammamed Plus"
 CLINIC_NAME_COMMON: str = "«Gammamed» klinikasi"

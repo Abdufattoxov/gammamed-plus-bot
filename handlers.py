@@ -29,6 +29,7 @@ from config import (
 )
 import database
 import google_sheets
+import meta_ads
 from states import AppointmentState, AnonymousQuestionState, AdminBroadcastState
 from keyboards import (
     get_main_menu_kb,
@@ -787,6 +788,32 @@ async def process_time_slot_selection(callback: CallbackQuery, state: FSMContext
         "user_id": user_id
     }
     asyncio.create_task(google_sheets.append_lead_to_google_sheet(lead_payload))
+    asyncio.create_task(send_excel_backup_to_admins(bot, app_id))
+
+
+async def send_excel_backup_to_admins(bot: Bot, app_id: int):
+    """Render.com da baza yo'qolmasligi uchun har yangi arizada adminlarga Excel zaxira faylini yuborish"""
+    filename = f"bemorlar_bazasi_{app_id}.xlsx"
+    try:
+        await database.export_appointments_to_excel(filename)
+        for admin_id in ADMIN_IDS:
+            try:
+                doc = FSInputFile(filename, filename="bemorlar_bazasi.xlsx")
+                await bot.send_document(
+                    chat_id=admin_id,
+                    document=doc,
+                    caption=f"💾 <b>Zaxira nusxa (#A-{app_id})</b> — Bemorlar bazasi (Excel)"
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
+    finally:
+        if os.path.exists(filename):
+            try:
+                os.remove(filename)
+            except Exception:
+                pass
 
 
 # ==========================================
@@ -948,6 +975,39 @@ async def admin_stats_callback(callback: CallbackQuery):
     except Exception:
         pass
     await callback.answer()
+
+
+@router.callback_query(F.data == "admin_meta_ads")
+async def admin_meta_ads_callback(callback: CallbackQuery):
+    """Meta Ads (Instagram/Facebook Target) natijalarini Graph API orqali olish va ko'rsatish"""
+    user_id = callback.from_user.id if callback.from_user else 0
+    if user_id not in ADMIN_IDS:
+        return
+
+    await callback.answer()
+    loading_msg = await callback.message.answer("⏳ Meta Ads kabinetidan ma’lumotlar yuklanmoqda...")
+
+    try:
+        stats = await database.get_appointments_stats()
+        analytics = await database.get_funnel_analytics()
+        total_appointments = stats.get("total_appointments", 0)
+        total_starts = analytics.get("menu_stats", {}).get("start", {}).get("total", 0)
+
+        report_text = await meta_ads.get_meta_ads_report(
+            total_appointments=total_appointments,
+            total_starts=total_starts
+        )
+        await loading_msg.edit_text(text=report_text, reply_markup=get_admin_panel_kb())
+    except meta_ads.MetaAuthError:
+        await loading_msg.edit_text(
+            "❌ Meta API tokeni ulanmagan yoki muddati tugagan. Server/Render sozlamalarida META_ACCESS_TOKEN ni tekshiring.",
+            reply_markup=get_admin_panel_kb()
+        )
+    except Exception as e:
+        await loading_msg.edit_text(
+            f"❌ Meta Ads ma'lumotlarini yuklashda xatolik yuz berdi: {str(e)}",
+            reply_markup=get_admin_panel_kb()
+        )
 
 
 @router.callback_query(F.data == "admin_google_sheets")
