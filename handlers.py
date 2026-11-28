@@ -22,6 +22,7 @@ from config import (
     DOCTOR_SPECIALTY,
     CLINIC_ADDRESS,
     CLINIC_WORKING_HOURS,
+    CONSULTATION_PRICE,
     CONSULTATION_OFFER,
     SAFETY_NOTICE,
     GOOGLE_SHEET_URL
@@ -97,6 +98,7 @@ def is_menu_navigation(text: str | None) -> bool:
     t = text.strip()
     keywords = [
         "Qabulga yozilish",
+        "Qabul narxi",
         "Xizmatlarimiz",
         "Xizmatlar va narxlar",
         "Shifokor haqida",
@@ -105,6 +107,21 @@ def is_menu_navigation(text: str | None) -> bool:
         "Bekor qilish"
     ]
     return any(k in t for k in keywords)
+
+
+async def track_event(event: Message | CallbackQuery, step_name: str):
+    """Foydalanuvchi bosgan bo'lim yoki voronka bosqichini xavfsiz yozib borish"""
+    try:
+        user = event.from_user
+        if user:
+            await database.log_user_event(
+                user_id=user.id,
+                username=user.username,
+                full_name=user.full_name,
+                step_name=step_name
+            )
+    except Exception:
+        pass
 
 
 # ==========================================
@@ -126,10 +143,12 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext)
             full_name=user.full_name,
             username=user.username
         )
+    await track_event(message, "start")
 
     # 1. Target reklama (Deep-link: /start bulungur_ads)
     if command.args and "bulungur_ads" in command.args:
         await state.set_state(AppointmentState.problem)
+        await track_event(message, "step_1_disease")
         deep_link_text = (
             f"Assalomu alaykum va rahmatulloh! 🌸\n\n"
             f"<b>«{CLINIC_NAME}»</b> ({CLINIC_NAME_COMMON}) — {DOCTOR_TITLE} <b>{DOCTOR_NAME}</b> "
@@ -193,10 +212,32 @@ async def cancel_handler_callback(callback: CallbackQuery, state: FSMContext):
 # ==========================================
 # 4. MA'LUMOT BO'LIMLARI
 # ==========================================
+@router.message(F.text.func(lambda t: t and ("Qabul narxi" in t)), StateFilter("*"))
+async def price_info_handler(message: Message, state: FSMContext):
+    """Qabul narxi bo'limi: Hormozi Value Stack taklifi"""
+    await state.clear()
+    await track_event(message, "menu_price")
+    text = (
+        f"💰 <b>Birlamchi chuqur qabul narxi: {CONSULTATION_PRICE}</b>\n"
+        f"<i>(Qabulga yozilish jarayonini boshlash uchun qabulga yozilish tugmasini bosing)</i>\n\n"
+        f"<b>Bu narxning ichiga nimalar kiradi (bitta qabulda 4 ta xizmat):</b>\n"
+        f"1️⃣ <b>Er-xotin birgalikdagi chuqur suhbat va ko‘rik</b> — bitta narxning o‘zida turmush o‘rtog‘ingiz bilan birga kirasiz;\n"
+        f"2️⃣ <b>Eski analiz va UTT qog‘ozlarining to‘liq auditi</b> — Dr. Zarifa (30 yil tajriba) barcha qog‘ozlaringizni ko‘rib, keraksiz dorilar va ortiqcha xarajatlardan himoya qiladi;\n"
+        f"3️⃣ <b>To‘liq tuzalishga qaratilgan shaxsiy mashqlar kompleksi</b> — og‘riq va bachadon spazmini dorisiz yechuvchi maxsus mashqlar qo‘lingizga yozib va tushuntirib beriladi;\n"
+        f"4️⃣ <b>24 soatlik individual kun tartibi xaritasi</b> — uyg‘onishdan uyqugacha bo‘lgan soatma-soat tiklanish rejasi shifokor dastxati bilan yozib beriladi.\n\n"
+        f"⚠️ Haftalik qabul o‘rinlari cheklangan. Qabulga yozilish uchun pastdagi tugmani bosing 👇"
+    )
+    await message.answer(
+        text=text,
+        reply_markup=get_services_info_inline_kb("📅 Hoziroq qabulga yozilish")
+    )
+
+
 @router.message(F.text.func(lambda t: t and any(k in t for k in ["Xizmatlarimiz", "Xizmatlar"])), StateFilter("*"))
 async def services_info_handler(message: Message, state: FSMContext):
     """Xizmatlarimiz bo'limi: kasalliklar va davolash yo'nalishlari"""
     await state.clear()
+    await track_event(message, "menu_services")
     text = (
         f"Dr. Zarifa 30 yillik chuqur amaliy tajriba hamda psixosomatik yondashuv asosida "
         f"quyidagi eng ko‘p uchraydigan kasalliklar va boshqa ginekalogik kasalliklarni muvaffaqiyatli davolaydi:\n\n"
@@ -225,6 +266,7 @@ async def services_info_handler(message: Message, state: FSMContext):
 async def doctor_info_handler(message: Message, state: FSMContext):
     """Shifokor haqida ma'lumot va fotosurat"""
     await state.clear()
+    await track_event(message, "menu_doctor")
     caption_text = (
         f"👩‍⚕️ <b>Shifokor haqida:</b>\n\n"
         f"<b>{DOCTOR_NAME}</b> — {DOCTOR_TITLE}.\n\n"
@@ -254,6 +296,7 @@ async def doctor_info_handler(message: Message, state: FSMContext):
 async def address_info_handler(message: Message, state: FSMContext):
     """Manzil va ish vaqti"""
     await state.clear()
+    await track_event(message, "menu_location")
     text = (
         f"📍 <b>«{CLINIC_NAME}» klinikasining manzili va ish tartibi:</b>\n\n"
         f"🏢 <b>Manzil va mo‘ljal:</b>\n"
@@ -290,6 +333,7 @@ async def contact_fallback_handler(message: Message, state: FSMContext):
 async def anon_question_start(message: Message, state: FSMContext):
     """Anonim savol berishni boshlash"""
     await state.clear()
+    await track_event(message, "menu_anon_question")
     await state.set_state(AnonymousQuestionState.waiting_for_question)
     text = (
         f"❓ <b>Shifokorga anonim savol yo‘llash</b>\n\n"
@@ -371,6 +415,9 @@ async def start_appointment_flow(event: Message | CallbackQuery, state: FSMConte
     """Qabulga yozilishni boshlash — 1-bosqich: Muammoni tanlash"""
     await state.clear()
     await state.set_state(AppointmentState.problem)
+    if isinstance(event, Message):
+        await track_event(event, "menu_booking")
+    await track_event(event, "step_1_disease")
 
     text = (
         f"📅 <b>Dr. Zarifa qabuliga yozilish</b>\n\n"
@@ -404,6 +451,7 @@ async def process_problem_selection(callback: CallbackQuery, state: FSMContext):
 
     await state.update_data(problem=problem_name)
     await state.set_state(AppointmentState.patient_name)
+    await track_event(callback, "step_2_name")
 
     await callback.answer()
     try:
@@ -476,6 +524,7 @@ async def process_patient_name(message: Message, state: FSMContext):
 
     await state.update_data(patient_name=name)
     await state.set_state(AppointmentState.phone_number)
+    await track_event(message, "step_3_phone")
 
     text = (
         f"👤 <b>Bemor:</b> {name}\n\n"
@@ -542,6 +591,7 @@ async def proceed_to_calendar(message: Message, state: FSMContext, phone_number:
     """Telefon saqlanib, 4-bosqich (Kalendar) ochiladi"""
     await state.update_data(phone_number=phone_number)
     await state.set_state(AppointmentState.appointment_date)
+    await track_event(message, "step_4_date")
 
     now = datetime.now()
     calendar_kb = generate_calendar_kb(year=now.year, month=now.month)
@@ -609,6 +659,7 @@ async def process_calendar_date(callback: CallbackQuery, state: FSMContext):
 
     await state.update_data(appointment_date=date_str, formatted_date=formatted_date)
     await state.set_state(AppointmentState.appointment_time)
+    await track_event(callback, "step_5_time")
 
     text = (
         f"🗓 <b>Tanlangan sana:</b> {formatted_date}\n\n"
@@ -653,6 +704,7 @@ async def process_time_slot_selection(callback: CallbackQuery, state: FSMContext
         appointment_time=full_appointment_time
     )
     await state.clear()
+    await track_event(callback, "step_6_confirmed")
 
     await callback.answer("Qabul vaqti belgilandi!")
     try:
@@ -743,6 +795,10 @@ async def process_time_slot_selection(callback: CallbackQuery, state: FSMContext
 @router.callback_query(F.data.startswith("adm_app:"))
 async def process_admin_appointment_action(callback: CallbackQuery, bot: Bot):
     """Admin ariza holatini o'zgartirishi — BARCHA adminlarda bir vaqtda sinxron yangilanadi"""
+    user_id = callback.from_user.id if callback.from_user else 0
+    if user_id not in ADMIN_IDS:
+        return
+
     parts = callback.data.split(":")
     app_id = int(parts[1])
     action = parts[2]
@@ -808,36 +864,82 @@ async def process_admin_appointment_action(callback: CallbackQuery, bot: Bot):
 @router.message(Command("admin"), StateFilter("*"))
 async def cmd_admin_panel(message: Message, state: FSMContext):
     """Admin panelni ochish (Faqat ADMIN_IDS uchun)"""
-    await state.clear()
     user_id = message.from_user.id if message.from_user else 0
     if user_id not in ADMIN_IDS:
         return
 
+    await state.clear()
     text = (
         f"🔐 <b>«{CLINIC_NAME}» Boshqaruv Paneli (Admin)</b>\n\n"
-        f"Xush kelibsiz! Ushbu bo‘lim orqali statistikani ko‘rishingiz, "
-        f"bemorlar bazasini Excel fayl qilib yuklab olishingiz "
-        f"hamda barcha foydalanuvchilarga xabar tarqatishingiz mumkin:"
+        f"Xush kelibsiz! Ushbu bo‘lim orqali bot statistikasi va voronka tahlilini ko‘rishingiz, "
+        f"Google Sheets bazasiga o‘tishingiz hamda barcha foydalanuvchilarga xabar tarqatishingiz mumkin:"
     )
     await message.answer(text=text, reply_markup=get_admin_panel_kb())
 
 
 @router.callback_query(F.data == "admin_stats")
 async def admin_stats_callback(callback: CallbackQuery):
-    """Statistikani ko'rsatish"""
+    """Statistika va Voronka (Drop-off) analitikasini ko'rsatish"""
     user_id = callback.from_user.id if callback.from_user else 0
     if user_id not in ADMIN_IDS:
-        await callback.answer("Ruxsat berilmagan!", show_alert=True)
         return
 
     stats = await database.get_appointments_stats()
+    analytics = await database.get_funnel_analytics()
+    menu = analytics["menu_stats"]
+    funnel = analytics["funnel_stats"]
+    dropoff = analytics["biggest_dropoff"]
+
+    step_labels = {
+        "step_1_disease": "1️⃣ Muammo tanlash",
+        "step_2_name": "2️⃣ Ism kiritish",
+        "step_3_phone": "3️⃣ Telefon kiritish",
+        "step_4_date": "4️⃣ Sana tanlash",
+        "step_5_time": "5️⃣ Vaqt tanlash",
+        "step_6_confirmed": "6️⃣ Tasdiqlangan (Ariza)"
+    }
+
+    s1 = funnel["step_1_disease"]
+
+    def pct(val: int) -> str:
+        if s1 <= 0:
+            return "0%"
+        return f"{round((val / s1) * 100, 1)}%"
+
+    funnel_lines = []
+    for key, label in step_labels.items():
+        val = funnel[key]
+        funnel_lines.append(f"• {label}: <b>{val}</b> kishi ({pct(val)})")
+
+    if dropoff:
+        from_lbl = step_labels.get(dropoff["from_step"], dropoff["from_step"])
+        to_lbl = step_labels.get(dropoff["to_step"], dropoff["to_step"])
+        dropoff_text = (
+            f"🚨 <b>Eng ko‘p to‘xtab qolish (Drop-off):</b>\n"
+            f"<i>{from_lbl}</i> ➔ <i>{to_lbl}</i> bosqichida "
+            f"<b>{dropoff['dropped_count']}</b> kishi (<b>{dropoff['dropped_pct']}%</b>) chiqib ketgan."
+        )
+    else:
+        dropoff_text = "🚨 <b>Eng ko‘p to‘xtab qolish (Drop-off):</b> <i>Hozircha yetarli ma'lumot yo‘q</i>"
+
     text = (
-        f"📊 <b>Klinika bot statistikasi:</b>\n"
+        f"📊 <b>Klinika Bot Statistikasi va Voronka Tahlili:</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"👥 <b>Jami foydalanuvchilar:</b> {stats['total_users']} nafar\n"
         f"📅 <b>Bugungi arizalar:</b> {stats['today_appointments']} ta\n"
         f"⏳ <b>Kutilayotgan arizalar:</b> {stats['pending_appointments']} ta\n"
-        f"📈 <b>Jami kelib tushgan arizalar:</b> {stats['total_appointments']} ta\n"
+        f"📈 <b>Jami arizalar:</b> {stats['total_appointments']} ta\n\n"
+        f"🔘 <b>Bo‘limlar bosilishi (jami / noyob):</b>\n"
+        f"• 🚀 /start: <b>{menu['start']['total']}</b> ({menu['start']['unique']} kishi)\n"
+        f"• 💰 Qabul narxi: <b>{menu['menu_price']['total']}</b> ({menu['menu_price']['unique']} kishi)\n"
+        f"• 📅 Qabulga yozilish: <b>{menu['menu_booking']['total']}</b> ({menu['menu_booking']['unique']} kishi)\n"
+        f"• 🩺 Xizmatlarimiz: <b>{menu['menu_services']['total']}</b> ({menu['menu_services']['unique']} kishi)\n"
+        f"• 👩‍⚕️ Shifokor haqida: <b>{menu['menu_doctor']['total']}</b> ({menu['menu_doctor']['unique']} kishi)\n"
+        f"• 📍 Manzil va ish vaqti: <b>{menu['menu_location']['total']}</b> ({menu['menu_location']['unique']} kishi)\n"
+        f"• ❓ Anonim savol: <b>{menu['menu_anon_question']['total']}</b> ({menu['menu_anon_question']['unique']} kishi)\n\n"
+        f"📉 <b>Qabulga yozilish voronkasi (noyob foydalanuvchilar):</b>\n"
+        + "\n".join(funnel_lines) + "\n\n"
+        f"{dropoff_text}\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"⏰ <i>Yangilangan vaqt: {datetime.now().strftime('%d.%m.%Y %H:%M')}</i>"
     )
@@ -853,7 +955,6 @@ async def admin_google_sheets_callback(callback: CallbackQuery):
     """Google Sheets havolasini taqdim etish yoki sozlash yo'riqnomasini ko'rsatish"""
     user_id = callback.from_user.id if callback.from_user else 0
     if user_id not in ADMIN_IDS:
-        await callback.answer("Ruxsat berilmagan!", show_alert=True)
         return
 
     sheet_url = os.getenv("GOOGLE_SHEET_URL", GOOGLE_SHEET_URL)
@@ -880,7 +981,6 @@ async def admin_export_callback(callback: CallbackQuery):
     """Bemorlar arizalar bazasini Excel fayl shaklida yuborish"""
     user_id = callback.from_user.id if callback.from_user else 0
     if user_id not in ADMIN_IDS:
-        await callback.answer("Ruxsat berilmagan!", show_alert=True)
         return
 
     await callback.answer("Excel fayl tayyorlanmoqda...", show_alert=False)
@@ -909,6 +1009,9 @@ async def admin_export_callback(callback: CallbackQuery):
 @router.callback_query(F.data == "admin_close")
 async def admin_close_callback(callback: CallbackQuery):
     """Admin panelni yopish"""
+    user_id = callback.from_user.id if callback.from_user else 0
+    if user_id not in ADMIN_IDS:
+        return
     try:
         await callback.message.delete()
     except Exception:
@@ -921,7 +1024,6 @@ async def admin_broadcast_start(callback: CallbackQuery, state: FSMContext):
     """Xabar yuborishni boshlash"""
     user_id = callback.from_user.id if callback.from_user else 0
     if user_id not in ADMIN_IDS:
-        await callback.answer("Ruxsat berilmagan!", show_alert=True)
         return
 
     await state.set_state(AdminBroadcastState.waiting_for_message)

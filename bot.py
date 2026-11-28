@@ -7,9 +7,9 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import BotCommand
+from aiogram.types import BotCommand, BotCommandScopeDefault, BotCommandScopeChat
 
-from config import BOT_TOKEN
+from config import BOT_TOKEN, ADMIN_IDS
 import database
 from handlers import router
 
@@ -69,12 +69,21 @@ async def start_background_web_server():
 
 
 async def set_bot_commands(bot: Bot):
-    """Telegram menyusida chiqadigan standart buyruqlar"""
-    commands = [
+    """Oddiy foydalanuvchilarga faqat /start, adminlarga esa /start va /admin ko'rinadi"""
+    default_commands = [
+        BotCommand(command="start", description="Botni qayta ishga tushirish va asosiy menyu")
+    ]
+    await bot.set_my_commands(default_commands, scope=BotCommandScopeDefault())
+
+    admin_commands = [
         BotCommand(command="start", description="Botni qayta ishga tushirish va asosiy menyu"),
         BotCommand(command="admin", description="Klinika boshqaruv paneli (faqat ma'murlar uchun)")
     ]
-    await bot.set_my_commands(commands)
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=admin_id))
+        except Exception as e:
+            logging.warning(f"Admin {admin_id} uchun komandalar menyusini o'rnatishda xatolik: {e}")
 
 
 async def main():

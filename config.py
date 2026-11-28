@@ -45,7 +45,8 @@ CLINIC_ADDRESS: str = os.getenv(
 )
 CLINIC_WORKING_HOURS: str = "Dushanba — Shanba: 09:00 dan 17:00 gacha\nYakshanba: Dam olish kuni"
 
-# Asosiy taklif (Offer) matni
+# Asosiy taklif (Offer) va qabul narxi
+CONSULTATION_PRICE: str = os.getenv("CONSULTATION_PRICE", "90 000 so‘m")
 CONSULTATION_OFFER: str = (
     "💡 <i>«Bitta qabulning o‘zida siz va turmush o‘rtog‘ingiz birgalikda suhbatdan o‘tasiz, "
     "barcha eski analizlaringiz ko‘rib chiqiladi va Dr. Zarifa uyda bajarish uchun "

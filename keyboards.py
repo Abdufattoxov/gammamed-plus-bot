@@ -26,13 +26,14 @@ def get_main_menu_kb() -> ReplyKeyboardMarkup:
     buttons = [
         [
             KeyboardButton(text="📅 Qabulga yozilish"),
-            KeyboardButton(text="🩺 Xizmatlarimiz")
+            KeyboardButton(text="💰 Qabul narxi")
         ],
         [
-            KeyboardButton(text="👩‍⚕️ Shifokor haqida"),
-            KeyboardButton(text="📍 Manzil va ish vaqti")
+            KeyboardButton(text="🩺 Xizmatlarimiz"),
+            KeyboardButton(text="👩‍⚕️ Shifokor haqida")
         ],
         [
+            KeyboardButton(text="📍 Manzil va ish vaqti"),
             KeyboardButton(text="❓ Anonim savol berish")
         ]
     ]
@@ -302,7 +303,7 @@ def get_admin_panel_kb() -> InlineKeyboardMarkup:
     buttons = [
         [
             InlineKeyboardButton(
-                text="📈 Statistika",
+                text="📊 Statistika / Voronka",
                 callback_data="admin_stats"
             ),
             sheet_button
@@ -323,12 +324,12 @@ def get_admin_panel_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def get_services_info_inline_kb() -> InlineKeyboardMarkup:
-    """Xizmatlar yoki Shifokor haqida bo'limi ostidagi tezkor qabul tugmasi"""
+def get_services_info_inline_kb(button_text: str = "📅 Hozir qabulga yozilish") -> InlineKeyboardMarkup:
+    """Xizmatlar, Narxlar yoki Shifokor haqida bo'limi ostidagi tezkor qabul tugmasi"""
     buttons = [
         [
             InlineKeyboardButton(
-                text="📅 Hozir qabulga yozilish",
+                text=button_text,
                 callback_data="start_appointment_flow"
             )
         ]
